@@ -21,6 +21,10 @@ type Icons struct {
 	Edit         *widget.Icon
 	Delete       *widget.Icon
 	Merge        *widget.Icon
+	AddFolder    *widget.Icon
+	ViewList     *widget.Icon
+	Timeline     *widget.Icon
+	Rotation3D   *widget.Icon
 }
 
 func NewIcons() *Icons {
@@ -41,6 +45,10 @@ func NewIcons() *Icons {
 		Edit:         load(icons.EditorModeEdit),
 		Delete:       load(icons.ActionDelete),
 		Merge:        load(icons.EditorMergeType),
+		AddFolder:    load(icons.FileCreateNewFolder),
+		ViewList:     load(icons.ActionViewList),
+		Timeline:     load(icons.ActionTimeline),
+		Rotation3D:   load(icons.Action3DRotation),
 	}
 }
 

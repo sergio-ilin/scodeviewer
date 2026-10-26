@@ -1017,18 +1017,50 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 	return drawWithBg(gtx, pal.HeaderBg, func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Top: unit.Dp(16), Bottom: unit.Dp(16), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				// App Brand
+				// Top Bar: Brand + Group 1 (Add Repo) + Group 2 (View Switcher)
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						// App Brand
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							lbl := material.Label(a.theme, unit.Sp(14), "sCodeViewer")
+							lbl := material.Label(a.theme, unit.Sp(13), "sCodeViewer")
 							lbl.Color = pal.Text
 							lbl.Font.Weight = font.Bold
 							return lbl.Layout(gtx)
 						}),
 						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+
+						// GROUP 1: Project Actions (Add Repo)
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return a.drawIconPillButton(gtx, &a.btnAddProject, a.icons.Folder, "+ Add Repo", false, pal)
+							return a.drawIconButton(gtx, &a.btnAddProject, a.icons.AddFolder, false, pal)
+						}),
+
+						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return drawVerticalDivider(gtx, pal.Border)
+							})
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+
+						// GROUP 2: View Switcher (Commits, Updates, 3D Graph)
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return drawWithRoundedBg(gtx, pal.Bg, unit.Dp(6), func(gtx layout.Context) layout.Dimensions {
+								return layout.UniformInset(unit.Dp(2)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											return a.drawIconButton(gtx, &a.btnTabCommits, a.icons.ViewList, a.activeTab == "commits", pal)
+										}),
+										layout.Rigid(layout.Spacer{Width: unit.Dp(2)}.Layout),
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											return a.drawIconButton(gtx, &a.btnTabUpdates, a.icons.Timeline, a.activeTab == "updates", pal)
+										}),
+										layout.Rigid(layout.Spacer{Width: unit.Dp(2)}.Layout),
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											return a.drawIconButton(gtx, &a.btnTab3DGraph, a.icons.Rotation3D, a.activeTab == "graph3d", pal)
+										}),
+									)
+								})
+							})
 						}),
 					)
 				}),
@@ -1038,29 +1070,7 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 				}),
 				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
 
-				// VIEW SWITCHER
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return a.drawSectionHeader(gtx, "VIEWS", pal)
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return a.drawNavRow(gtx, &a.btnTabCommits, "Commits & Merges", a.activeTab == "commits", pal)
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return a.drawNavRow(gtx, &a.btnTabUpdates, "Activity & Updates", a.activeTab == "updates", pal)
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return a.drawNavRow(gtx, &a.btnTab3DGraph, "3D Topology Graph", a.activeTab == "graph3d", pal)
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return drawDivider(gtx, pal.Border)
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
-
-				// PERSISTENT PROJECTS / WORKSPACES SECTION
+				// PERSISTENT PROJECTS / WORKSPACES SECTION (Selected first!)
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -2947,6 +2957,26 @@ func (a *App) drawIconPillButton(gtx layout.Context, btn *widget.Clickable, ic *
 						return lbl.Layout(gtx)
 					}),
 				)
+			})
+		})
+	})
+}
+
+func (a *App) drawIconButton(gtx layout.Context, btn *widget.Clickable, ic *widget.Icon, active bool, pal Palette) layout.Dimensions {
+	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		bg := color.NRGBA{}
+		fg := pal.TextMuted
+		if active {
+			bg = pal.Selected
+			fg = pal.Accent
+		} else if btn.Hovered() {
+			bg = pal.Hover
+			fg = pal.Text
+		}
+
+		return drawWithRoundedBg(gtx, bg, unit.Dp(5), func(gtx layout.Context) layout.Dimensions {
+			return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return a.icons.Layout(gtx, ic, fg, unit.Dp(15))
 			})
 		})
 	})

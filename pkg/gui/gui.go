@@ -82,22 +82,22 @@ type App struct {
 	projectDeleteBtns []widget.Clickable
 	subRepoClicks   []widget.Clickable
 	branchClicks    []widget.Clickable
-	projectsList    layout.List
-	branchesList    layout.List
-	subReposList    layout.List
+	projectsList    widget.List
+	branchesList    widget.List
+	subReposList    widget.List
 
 	// UI Widgets - Middle Panel
 	btnFilterAll    widget.Clickable
 	btnFilterMerges widget.Clickable
 	btnFilterDirect widget.Clickable
 	btnFilterAI     widget.Clickable
-	commitsList     layout.List
+	commitsList     widget.List
 	commitClicks    []widget.Clickable
 
 	// UI Widgets - Right Panel
 	mergedClicks   []widget.Clickable
-	diffList       layout.List
-	updatesList    layout.List
+	diffList       widget.List
+	updatesList    widget.List
 	authorClicks   []widget.Clickable
 	timelineClicks []widget.Clickable
 
@@ -143,12 +143,12 @@ func NewApp(initialPath string) *App {
 		commitFilter:  "all",
 		timePeriod:    "7d",
 		aiFilter:      "all",
-		projectsList:  layout.List{Axis: layout.Vertical},
-		branchesList:  layout.List{Axis: layout.Vertical},
-		subReposList:  layout.List{Axis: layout.Vertical},
-		commitsList:   layout.List{Axis: layout.Vertical},
-		diffList:      layout.List{Axis: layout.Vertical},
-		updatesList:   layout.List{Axis: layout.Vertical},
+		projectsList:  widget.List{List: layout.List{Axis: layout.Vertical}},
+		branchesList:  widget.List{List: layout.List{Axis: layout.Vertical}},
+		subReposList:  widget.List{List: layout.List{Axis: layout.Vertical}},
+		commitsList:   widget.List{List: layout.List{Axis: layout.Vertical}},
+		diffList:      widget.List{List: layout.List{Axis: layout.Vertical}},
+		updatesList:   widget.List{List: layout.List{Axis: layout.Vertical}},
 	}
 
 	if target != "" {
@@ -704,7 +704,7 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 
 				// Projects List (with active highlight, rename, delete)
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return a.projectsList.Layout(gtx, len(projects), func(gtx layout.Context, idx int) layout.Dimensions {
+					return a.createListStyle(&a.projectsList, pal).Layout(gtx, len(projects), func(gtx layout.Context, idx int) layout.Dimensions {
 						p := projects[idx]
 						if searchProj != "" && !strings.Contains(strings.ToLower(p.Name), searchProj) && !strings.Contains(strings.ToLower(p.Path), searchProj) {
 							return layout.Dimensions{}
@@ -798,7 +798,7 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 							}),
 							layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return a.subReposList.Layout(gtx, len(subRepos), func(gtx layout.Context, idx int) layout.Dimensions {
+								return a.createListStyle(&a.subReposList, pal).Layout(gtx, len(subRepos), func(gtx layout.Context, idx int) layout.Dimensions {
 									r := subRepos[idx]
 									isActive := r.Path == activeRepo
 									var click *widget.Clickable
@@ -864,7 +864,7 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 						})
 					}
 
-					return a.branchesList.Layout(gtx, len(filteredBranches), func(gtx layout.Context, fIdx int) layout.Dimensions {
+					return a.createListStyle(&a.branchesList, pal).Layout(gtx, len(filteredBranches), func(gtx layout.Context, fIdx int) layout.Dimensions {
 						origIdx := filteredBranches[fIdx]
 						b := branches[origIdx]
 						isActive := b.Name == activeBranch
@@ -1063,7 +1063,7 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 				})
 			}
 
-			return a.commitsList.Layout(gtx, len(filtered), func(gtx layout.Context, idx int) layout.Dimensions {
+			return a.createListStyle(&a.commitsList, pal).Layout(gtx, len(filtered), func(gtx layout.Context, idx int) layout.Dimensions {
 				c := filtered[idx]
 				isSelected := c.Hash == a.selectedHash
 				isUncommitted := c.Hash == "UNCOMMITTED"
@@ -1249,7 +1249,7 @@ func (a *App) layoutUpdatesCenterPanel(gtx layout.Context, pal Palette) layout.D
 				})
 			}
 
-			return a.updatesList.Layout(gtx, len(up.Commits), func(gtx layout.Context, idx int) layout.Dimensions {
+			return a.createListStyle(&a.updatesList, pal).Layout(gtx, len(up.Commits), func(gtx layout.Context, idx int) layout.Dimensions {
 				c := up.Commits[idx]
 				var click *widget.Clickable
 				if idx < len(a.timelineClicks) {
@@ -1442,7 +1442,7 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 				}
 			}
 
-			return a.diffList.Layout(gtx, len(items), func(gtx layout.Context, idx int) layout.Dimensions {
+			return a.createListStyle(&a.diffList, pal).Layout(gtx, len(items), func(gtx layout.Context, idx int) layout.Dimensions {
 				it := items[idx]
 
 				if it.isFileHeader {
@@ -1728,6 +1728,22 @@ func (a *App) layoutEmptyState(gtx layout.Context, pal Palette) layout.Dimension
 // -------------------------------------------------------------
 // UI Helpers
 // -------------------------------------------------------------
+func (a *App) createListStyle(state *widget.List, pal Palette) material.ListStyle {
+	ls := material.List(a.theme, state)
+	ls.AnchorStrategy = material.Overlay
+	ls.Indicator.MinorWidth = unit.Dp(6)
+	ls.Indicator.CornerRadius = unit.Dp(3)
+	if pal.IsDark {
+		ls.Indicator.Color = color.NRGBA{R: 110, G: 118, B: 129, A: 160}
+		ls.Indicator.HoverColor = pal.Accent
+	} else {
+		ls.Indicator.Color = color.NRGBA{R: 140, G: 149, B: 159, A: 180}
+		ls.Indicator.HoverColor = pal.Accent
+	}
+	ls.Track.Color = color.NRGBA{0, 0, 0, 0}
+	return ls
+}
+
 func (a *App) drawSectionHeader(gtx layout.Context, title string, pal Palette) layout.Dimensions {
 	lbl := material.Label(a.theme, unit.Sp(9.5), title)
 	lbl.Font.Weight = font.Bold

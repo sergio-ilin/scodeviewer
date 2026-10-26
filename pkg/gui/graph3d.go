@@ -89,11 +89,14 @@ func NewGraph3DView(app *App) *Graph3DView {
 func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Palette) layout.Dimensions {
 	if data == nil || len(data.Nodes) == 0 {
 		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Label(g.app.theme, unit.Sp(13), "No git commit graph data available")
+			lbl := material.Label(g.app.theme, unit.Sp(13), "Loading 3D commit topology...")
 			lbl.Color = pal.TextMuted
 			return lbl.Layout(gtx)
 		})
 	}
+
+	// Ensure the 3D viewport fills the full allocated area
+	gtx.Constraints.Min = gtx.Constraints.Max
 
 	// Clip everything strictly to 3D canvas so nothing ever draws over sidebar or window bounds!
 	defer clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Push(gtx.Ops).Pop()
@@ -129,6 +132,7 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 		// Top Controls Toolbar (Presets, Camera, Zoom)
 		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(14), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				gtx.Constraints.Min.X = gtx.Constraints.Max.X
 				return drawWithBorder(gtx, pal.HeaderBg, unit.Dp(8), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
 					return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
@@ -148,7 +152,10 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 							}),
 							layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return drawVerticalDivider(gtx, pal.Border)
+								w := gtx.Dp(unit.Dp(1))
+								h := gtx.Dp(unit.Dp(18))
+								paint.FillShape(gtx.Ops, pal.Border, clip.Rect(image.Rect(0, 0, w, h)).Op())
+								return layout.Dimensions{Size: image.Pt(w, h)}
 							}),
 							layout.Rigid(layout.Spacer{Width: unit.Dp(14)}.Layout),
 							// Presets
@@ -341,12 +348,12 @@ func (g *Graph3DView) handlePointer(gtx layout.Context) {
 				if e.Modifiers.Contain(key.ModShift) {
 					// Shift+Wheel: horizontal pan
 					g.panX -= float64(e.Scroll.Y) * 0.5
-				} else {
+				} else if e.Scroll.Y != 0 {
 					// Mouse wheel zoom
 					if e.Scroll.Y > 0 {
-						g.zoom = math.Max(0.20, g.zoom*0.88)
-					} else if e.Scroll.Y < 0 {
-						g.zoom = math.Min(5.0, g.zoom*1.14)
+						g.zoom = math.Max(0.15, g.zoom*0.88)
+					} else {
+						g.zoom = math.Min(6.0, g.zoom*1.14)
 					}
 				}
 				gtx.Execute(op.InvalidateCmd{})

@@ -949,6 +949,12 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 	}
 
 	if a.activeTab == "graph3d" {
+		a.mu.Lock()
+		gData := a.graph3dData
+		a.mu.Unlock()
+		if gData == nil {
+			go a.loadGraph3D()
+		}
 		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 			// Panel 1: Left Navigation Sidebar
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -959,8 +965,9 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 			// Panel 2: 3D Topology Canvas (Floating Island Card)
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 				return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(4), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					gtx.Constraints.Min = gtx.Constraints.Max
 					return drawWithBorder(gtx, pal.Bg, unit.Dp(8), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
-						return a.graph3dView.Layout(gtx, a.graph3dData, pal)
+						return a.graph3dView.Layout(gtx, gData, pal)
 					})
 				})
 			}),

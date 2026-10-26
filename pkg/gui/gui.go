@@ -49,9 +49,11 @@ type App struct {
 	selectedDetail *models.CommitDetail
 	updatesData    *models.UpdatesResult
 
-	// Popover / View toggles
-	showBranchPicker  bool
-	showSubRepoPicker bool
+	// Filter Counts
+	countAll    int
+	countMerges int
+	countDirect int
+	countAI     int
 
 	// Filters
 	searchEditor widget.Editor
@@ -59,18 +61,31 @@ type App struct {
 	timePeriod   string // "1h", "24h", "today", "3d", "7d", "30d", "all"
 	aiFilter     string // "all", "ai_only", "human_only"
 
-	// UI Widgets
-	btnOpenFolder widget.Clickable
-	btnSubRepo    widget.Clickable
-	btnBranch     widget.Clickable
-	btnTabCommits widget.Clickable
-	btnTabUpdates widget.Clickable
+	// UI Widgets - Left Sidebar
+	btnOpenFolder   widget.Clickable
+	btnTabCommits   widget.Clickable
+	btnTabUpdates   widget.Clickable
+	subRepoClicks   []widget.Clickable
+	branchClicks    []widget.Clickable
+	branchesList    layout.List
+	subReposList    layout.List
 
+	// UI Widgets - Middle Panel
 	btnFilterAll    widget.Clickable
 	btnFilterMerges widget.Clickable
 	btnFilterDirect widget.Clickable
 	btnFilterAI     widget.Clickable
+	commitsList     layout.List
+	commitClicks    []widget.Clickable
 
+	// UI Widgets - Right Panel
+	mergedClicks   []widget.Clickable
+	diffList       layout.List
+	updatesList    layout.List
+	authorClicks   []widget.Clickable
+	timelineClicks []widget.Clickable
+
+	// Updates Slice Buttons
 	btnSlice1h    widget.Clickable
 	btnSlice24h   widget.Clickable
 	btnSliceToday widget.Clickable
@@ -82,16 +97,6 @@ type App struct {
 	btnUpFilterAll   widget.Clickable
 	btnUpFilterAI    widget.Clickable
 	btnUpFilterHuman widget.Clickable
-
-	commitsList      layout.List
-	commitClicks     []widget.Clickable
-	mergedClicks     []widget.Clickable
-	branchClicks     []widget.Clickable
-	subRepoClicks    []widget.Clickable
-	diffList         layout.List
-	updatesList      layout.List
-	authorClicks     []widget.Clickable
-	timelineClicks   []widget.Clickable
 }
 
 func NewApp(initialPath string) *App {
@@ -119,6 +124,8 @@ func NewApp(initialPath string) *App {
 		commitFilter: "all",
 		timePeriod:   "7d",
 		aiFilter:     "all",
+		branchesList: layout.List{Axis: layout.Vertical},
+		subReposList: layout.List{Axis: layout.Vertical},
 		commitsList:  layout.List{Axis: layout.Vertical},
 		diffList:     layout.List{Axis: layout.Vertical},
 		updatesList:  layout.List{Axis: layout.Vertical},
@@ -135,8 +142,8 @@ func (a *App) Run() error {
 	a.window = new(app.Window)
 	a.window.Option(
 		app.Title("sCodeViewer"),
-		app.Size(unit.Dp(1180), unit.Dp(740)),
-		app.MinSize(unit.Dp(800), unit.Dp(500)),
+		app.Size(unit.Dp(1200), unit.Dp(760)),
+		app.MinSize(unit.Dp(900), unit.Dp(550)),
 	)
 
 	if a.activeRepo != "" && a.gitSvc.IsGitRepo(a.activeRepo) {
@@ -164,7 +171,7 @@ func (a *App) loadData() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Discover nested repos if rootPath is set
+	// Discover nested repos
 	if a.rootPath != "" {
 		subRepos, err := a.gitSvc.FindGitRepositories(a.rootPath)
 		if err == nil && len(subRepos) > 0 {
@@ -194,35 +201,66 @@ func (a *App) loadData() {
 }
 
 func (a *App) reloadCommitsLocked() {
-	mergesOnly := a.commitFilter == "merges"
-	filterAI := ""
-	if a.commitFilter == "ai" {
-		filterAI = "ai_only"
-	}
-
-	commits, err := a.gitSvc.GetCommits(a.activeRepo, a.activeBranch, "", filterAI, mergesOnly, 200, 0)
+	// Always fetch all commits to calculate accurate filter counts
+	allCommits, err := a.gitSvc.GetCommits(a.activeRepo, a.activeBranch, "", "", false, 250, 0)
 	if err == nil {
-		// Filter direct commits if requested
-		if a.commitFilter == "direct" {
-			var direct []models.CommitSummary
-			for _, c := range commits {
-				if !c.IsMerge {
-					direct = append(direct, c)
-				}
+		a.countAll = len(allCommits)
+		a.countMerges = 0
+		a.countDirect = 0
+		a.countAI = 0
+
+		var filtered []models.CommitSummary
+		for _, c := range allCommits {
+			if c.IsMerge {
+				a.countMerges++
+			} else {
+				a.countDirect++
 			}
-			a.commits = direct
-		} else {
-			a.commits = commits
+			if c.IsAI {
+				a.countAI++
+			}
+
+			// Apply active filter
+			switch a.commitFilter {
+			case "merges":
+				if c.IsMerge {
+					filtered = append(filtered, c)
+				}
+			case "direct":
+				if !c.IsMerge {
+					filtered = append(filtered, c)
+				}
+			case "ai":
+				if c.IsAI {
+					filtered = append(filtered, c)
+				}
+			default:
+				filtered = append(filtered, c)
+			}
 		}
 
-		a.commitClicks = make([]widget.Clickable, len(a.commits))
-		if len(a.commits) > 0 && a.selectedHash == "" {
-			a.selectedHash = a.commits[0].Hash
-			detail, err := a.gitSvc.GetCommitDetail(a.activeRepo, a.commits[0].Hash)
-			if err == nil {
+		a.commits = filtered
+		a.commitClicks = make([]widget.Clickable, len(filtered))
+
+		// Auto select first commit if none or current selected is not in filtered
+		foundSelected := false
+		for _, c := range filtered {
+			if c.Hash == a.selectedHash {
+				foundSelected = true
+				break
+			}
+		}
+
+		if (!foundSelected || a.selectedHash == "") && len(filtered) > 0 {
+			a.selectedHash = filtered[0].Hash
+			detail, errDetail := a.gitSvc.GetCommitDetail(a.activeRepo, filtered[0].Hash)
+			if errDetail == nil {
 				a.selectedDetail = detail
 				a.mergedClicks = make([]widget.Clickable, len(detail.MergedCommits))
 			}
+		} else if len(filtered) == 0 {
+			a.selectedHash = ""
+			a.selectedDetail = nil
 		}
 	}
 }
@@ -266,8 +304,6 @@ func (a *App) handleEvents(gtx layout.Context) {
 				a.repoName = filepath.Base(path)
 				a.selectedHash = ""
 				a.selectedDetail = nil
-				a.showBranchPicker = false
-				a.showSubRepoPicker = false
 				if a.cfgMgr != nil {
 					a.cfgMgr.AddProject(path, true)
 				}
@@ -280,28 +316,12 @@ func (a *App) handleEvents(gtx layout.Context) {
 		}()
 	}
 
-	// Toggle SubRepo Picker
-	if a.btnSubRepo.Clicked(gtx) {
-		a.showSubRepoPicker = !a.showSubRepoPicker
-		a.showBranchPicker = false
-	}
-
-	// Toggle Branch Picker
-	if a.btnBranch.Clicked(gtx) {
-		a.showBranchPicker = !a.showBranchPicker
-		a.showSubRepoPicker = false
-	}
-
 	// Tab switcher
 	if a.btnTabCommits.Clicked(gtx) {
 		a.activeTab = "commits"
-		a.showBranchPicker = false
-		a.showSubRepoPicker = false
 	}
 	if a.btnTabUpdates.Clicked(gtx) {
 		a.activeTab = "updates"
-		a.showBranchPicker = false
-		a.showSubRepoPicker = false
 		a.mu.Lock()
 		a.reloadUpdatesLocked()
 		a.mu.Unlock()
@@ -315,7 +335,6 @@ func (a *App) handleEvents(gtx layout.Context) {
 			a.repoName = a.subRepos[i].Name
 			a.selectedHash = ""
 			a.selectedDetail = nil
-			a.showSubRepoPicker = false
 			go func() {
 				a.loadData()
 				if a.window != nil {
@@ -330,7 +349,6 @@ func (a *App) handleEvents(gtx layout.Context) {
 	for i := range a.branchClicks {
 		if i < len(a.branches) && a.branchClicks[i].Clicked(gtx) {
 			a.activeBranch = a.branches[i].Name
-			a.showBranchPicker = false
 			a.reloadCommitsLocked()
 			a.reloadUpdatesLocked()
 			break
@@ -433,274 +451,263 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 	// Clip & Fill window background
 	paint.FillShape(gtx.Ops, pal.Bg, clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Op())
 
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		// Header Bar
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return a.layoutHeader(gtx, pal)
-		}),
-		// Divider
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return drawDivider(gtx, pal.Border)
-		}),
-		// Dropdown panels if active
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			if a.showSubRepoPicker {
-				return a.layoutSubRepoPicker(gtx, pal)
-			}
-			if a.showBranchPicker {
-				return a.layoutBranchPicker(gtx, pal)
-			}
-			return layout.Dimensions{}
-		}),
-		// Main Content
-		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			if a.activeRepo == "" {
-				return a.layoutEmptyState(gtx, pal)
-			}
-			if a.activeTab == "updates" {
-				return a.layoutUpdatesTab(gtx, pal)
-			}
-			return a.layoutCommitsTab(gtx, pal)
-		}),
-	)
-}
-
-func (a *App) layoutHeader(gtx layout.Context, pal Palette) layout.Dimensions {
-	return drawWithBg(gtx, pal.HeaderBg, func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{
-			Top:    unit.Dp(8),
-			Bottom: unit.Dp(8),
-			Left:   unit.Dp(16),
-			Right:  unit.Dp(16),
-		}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{
-				Axis:      layout.Horizontal,
-				Alignment: layout.Middle,
-			}.Layout(gtx,
-				// App title
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.theme, unit.Sp(13.5), "sCodeViewer")
-					lbl.Color = pal.Text
-					lbl.Font.Weight = font.Bold
-					return lbl.Layout(gtx)
-				}),
-				layout.Rigid(layout.Spacer{Width: unit.Dp(14)}.Layout),
-
-				// Project / Nested Sub-repo Selector
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					btnText := "Project: None"
-					if a.repoName != "" {
-						countStr := ""
-						if len(a.subRepos) > 1 {
-							countStr = fmt.Sprintf(" (%d repos)", len(a.subRepos))
-						}
-						btnText = "Repo: " + a.repoName + countStr
-					}
-					return a.drawPillButton(gtx, &a.btnSubRepo, btnText, a.showSubRepoPicker, pal)
-				}),
-				layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-
-				// Open Folder
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return a.drawPillButton(gtx, &a.btnOpenFolder, "Open Folder...", false, pal)
-				}),
-				layout.Rigid(layout.Spacer{Width: unit.Dp(14)}.Layout),
-
-				// Branch Selector
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					bText := "Branch: " + a.activeBranch
-					if a.activeBranch == "" {
-						bText = "Branch: None"
-					}
-					return a.drawPillButton(gtx, &a.btnBranch, bText, a.showBranchPicker, pal)
-				}),
-
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					return layout.Dimensions{}
-				}),
-
-				// Tabs: Commits, Updates (NO THEME BUTTON)
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return a.drawPillButton(gtx, &a.btnTabCommits, "Commits & Merges", a.activeTab == "commits", pal)
-				}),
-				layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return a.drawPillButton(gtx, &a.btnTabUpdates, "Updates", a.activeTab == "updates", pal)
-				}),
-			)
-		})
-	})
-}
-
-// SubRepo Picker dropdown
-func (a *App) layoutSubRepoPicker(gtx layout.Context, pal Palette) layout.Dimensions {
-	a.mu.Lock()
-	subRepos := a.subRepos
-	a.mu.Unlock()
-
-	return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.theme, unit.Sp(11), "Select Project / Nested Repository:")
-					lbl.Color = pal.TextMuted
-					return lbl.Layout(gtx)
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-						a.drawSubRepoList(gtx, subRepos, pal)...,
-					)
-				}),
-			)
-		})
-	})
-}
-
-func (a *App) drawSubRepoList(gtx layout.Context, repos []models.SubRepo, pal Palette) []layout.FlexChild {
-	var children []layout.FlexChild
-	for i, r := range repos {
-		idx := i
-		repo := r
-		isActive := repo.Path == a.activeRepo
-
-		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			var click *widget.Clickable
-			if idx < len(a.subRepoClicks) {
-				click = &a.subRepoClicks[idx]
-			} else {
-				click = new(widget.Clickable)
-			}
-			label := repo.Name
-			if repo.RelPath != "." {
-				label += " [" + repo.RelPath + "]"
-			}
-			return a.drawPillButton(gtx, click, label, isActive, pal)
-		}))
-		children = append(children, layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout))
+	if a.activeRepo == "" {
+		return a.layoutEmptyState(gtx, pal)
 	}
-	return children
-}
 
-// Branch Picker dropdown
-func (a *App) layoutBranchPicker(gtx layout.Context, pal Palette) layout.Dimensions {
-	a.mu.Lock()
-	branches := a.branches
-	a.mu.Unlock()
-
-	return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.theme, unit.Sp(11), fmt.Sprintf("Branches (%d total):", len(branches)))
-					lbl.Color = pal.TextMuted
-					return lbl.Layout(gtx)
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-						a.drawBranchList(gtx, branches, pal)...,
-					)
-				}),
-			)
-		})
-	})
-}
-
-func (a *App) drawBranchList(gtx layout.Context, branches []models.BranchInfo, pal Palette) []layout.FlexChild {
-	var children []layout.FlexChild
-	for i, b := range branches {
-		idx := i
-		branch := b
-		isActive := branch.Name == a.activeBranch
-
-		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			var click *widget.Clickable
-			if idx < len(a.branchClicks) {
-				click = &a.branchClicks[idx]
-			} else {
-				click = new(widget.Clickable)
-			}
-			name := branch.Name
-			if branch.IsCurrent {
-				name = "* " + name
-			}
-			return a.drawPillButton(gtx, click, name, isActive, pal)
-		}))
-		children = append(children, layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout))
-	}
-	return children
-}
-
-func (a *App) layoutCommitsTab(gtx layout.Context, pal Palette) layout.Dimensions {
+	// Professional 3-Panel Architecture:
+	// Panel 1 (Left 230dp): Project / SubRepos + Branches + Views
+	// Panel 2 (Middle 360dp): Commits & Merges / Updates Feed
+	// Panel 3 (Right flexed): Detailed Diff Viewer / Analytics
 	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-		// Left: Commits sidebar (360dp)
+		// Panel 1: Left Navigation Sidebar
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			gtx.Constraints.Min.X = gtx.Dp(unit.Dp(360))
-			gtx.Constraints.Max.X = gtx.Dp(unit.Dp(360))
-			return a.layoutCommitsSidebar(gtx, pal)
+			gtx.Constraints.Min.X = gtx.Dp(unit.Dp(230))
+			gtx.Constraints.Max.X = gtx.Dp(unit.Dp(230))
+			return a.layoutLeftSidebar(gtx, pal)
 		}),
-		// Vertical separator
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return drawVerticalDivider(gtx, pal.Border)
 		}),
-		// Right: Diff detail
+		// Panel 2: Middle Panel (Commits List or Updates List)
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min.X = gtx.Dp(unit.Dp(360))
+			gtx.Constraints.Max.X = gtx.Dp(unit.Dp(360))
+			return a.layoutCenterPanel(gtx, pal)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return drawVerticalDivider(gtx, pal.Border)
+		}),
+		// Panel 3: Right Panel (Diff / Merge Breakdown / Analytics)
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			return a.layoutCommitDetail(gtx, pal)
+			return a.layoutRightPanel(gtx, pal)
 		}),
 	)
 }
 
-func (a *App) layoutCommitsSidebar(gtx layout.Context, pal Palette) layout.Dimensions {
+// -------------------------------------------------------------
+// PANEL 1: Left Sidebar (Project Scope, Sub-repos, Branches, Views)
+// -------------------------------------------------------------
+func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensions {
+	a.mu.Lock()
+	subRepos := a.subRepos
+	branches := a.branches
+	activeRepo := a.activeRepo
+	activeBranch := a.activeBranch
+	a.mu.Unlock()
+
+	return drawWithBg(gtx, pal.HeaderBg, func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				// App Brand + Open Folder
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Label(a.theme, unit.Sp(13.5), "sCodeViewer")
+							lbl.Color = pal.Text
+							lbl.Font.Weight = font.Bold
+							return lbl.Layout(gtx)
+						}),
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawPillButton(gtx, &a.btnOpenFolder, "Open...", false, pal)
+						}),
+					)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return drawDivider(gtx, pal.Border)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+
+				// VIEW SWITCHER (Commits vs Updates)
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.drawSectionHeader(gtx, "VIEWS", pal)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.drawNavRow(gtx, &a.btnTabCommits, "Commits & Merges", a.activeTab == "commits", pal)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.drawNavRow(gtx, &a.btnTabUpdates, "Activity & Updates", a.activeTab == "updates", pal)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return drawDivider(gtx, pal.Border)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+
+				// PROJECTS / SUB-REPOSITORIES SECTION
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					title := fmt.Sprintf("PROJECTS (%d)", len(subRepos))
+					if len(subRepos) == 0 {
+						title = "PROJECT (1)"
+					}
+					return a.drawSectionHeader(gtx, title, pal)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					if len(subRepos) <= 1 {
+						name := a.repoName
+						if name == "" {
+							name = "main repository"
+						}
+						return a.drawTreeItem(gtx, name, true, true, pal)
+					}
+					// List sub-repositories
+					return a.subReposList.Layout(gtx, len(subRepos), func(gtx layout.Context, idx int) layout.Dimensions {
+						r := subRepos[idx]
+						isActive := r.Path == activeRepo
+						var click *widget.Clickable
+						if idx < len(a.subRepoClicks) {
+							click = &a.subRepoClicks[idx]
+						} else {
+							click = new(widget.Clickable)
+						}
+
+						displayName := r.Name
+						if !r.IsRoot && r.RelPath != "" {
+							displayName = r.RelPath
+						}
+
+						return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return a.drawNavRow(gtx, click, displayName, isActive, pal)
+						})
+					})
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return drawDivider(gtx, pal.Border)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+
+				// BRANCHES SECTION (Scrollable list of all branches)
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.drawSectionHeader(gtx, fmt.Sprintf("BRANCHES (%d)", len(branches)), pal)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					if len(branches) == 0 {
+						return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Label(a.theme, unit.Sp(11), "No branches")
+							lbl.Color = pal.TextMuted
+							return lbl.Layout(gtx)
+						})
+					}
+
+					return a.branchesList.Layout(gtx, len(branches), func(gtx layout.Context, idx int) layout.Dimensions {
+						b := branches[idx]
+						isActive := b.Name == activeBranch
+						var click *widget.Clickable
+						if idx < len(a.branchClicks) {
+							click = &a.branchClicks[idx]
+						} else {
+							click = new(widget.Clickable)
+						}
+
+						name := b.Name
+						if b.IsCurrent {
+							name = "● " + name
+						} else {
+							name = "  " + name
+						}
+
+						return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return a.drawNavRow(gtx, click, name, isActive, pal)
+						})
+					})
+				}),
+			)
+		})
+	})
+}
+
+// -------------------------------------------------------------
+// PANEL 2: Middle Panel (Commits List or Updates List)
+// -------------------------------------------------------------
+func (a *App) layoutCenterPanel(gtx layout.Context, pal Palette) layout.Dimensions {
+	if a.activeTab == "updates" {
+		return a.layoutUpdatesCenterPanel(gtx, pal)
+	}
+	return a.layoutCommitsCenterPanel(gtx, pal)
+}
+
+func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.Dimensions {
 	a.mu.Lock()
 	commits := a.commits
+	activeBranch := a.activeBranch
+	cAll := a.countAll
+	cMerges := a.countMerges
+	cDirect := a.countDirect
+	cAI := a.countAI
 	a.mu.Unlock()
 
 	search := strings.ToLower(strings.TrimSpace(a.searchEditor.Text()))
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		// Search & Filter controls
+		// Header info bar: Active Branch & Search
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-					// Search input
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						ed := material.Editor(a.theme, &a.searchEditor, "Search commits or hash...")
-						ed.TextSize = unit.Sp(12)
-						ed.Color = pal.Text
-						ed.HintColor = pal.TextMuted
-						return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
-							return layout.UniformInset(unit.Dp(6)).Layout(gtx, ed.Layout)
-						})
-					}),
-					layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
-					// Filter chips: All, Merges Only, Direct Commits, AI
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return a.drawPillButton(gtx, &a.btnFilterAll, "All", a.commitFilter == "all", pal)
-							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return a.drawPillButton(gtx, &a.btnFilterMerges, "Merges Only", a.commitFilter == "merges", pal)
-							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return a.drawPillButton(gtx, &a.btnFilterDirect, "Direct", a.commitFilter == "direct", pal)
-							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return a.drawPillButton(gtx, &a.btnFilterAI, "AI", a.commitFilter == "ai", pal)
-							}),
-						)
-					}),
-				)
+			return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						// Current branch indicator
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Label(a.theme, unit.Sp(11), "Branch:")
+									lbl.Color = pal.TextMuted
+									return lbl.Layout(gtx)
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Label(a.theme, unit.Sp(12), activeBranch)
+									lbl.Font.Weight = font.Bold
+									lbl.Color = pal.Text
+									return lbl.Layout(gtx)
+								}),
+							)
+						}),
+						layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+						// Search input
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							ed := material.Editor(a.theme, &a.searchEditor, "Search commits or hash...")
+							ed.TextSize = unit.Sp(11.5)
+							ed.Color = pal.Text
+							ed.HintColor = pal.TextMuted
+							return drawWithBg(gtx, pal.Bg, func(gtx layout.Context) layout.Dimensions {
+								return layout.UniformInset(unit.Dp(6)).Layout(gtx, ed.Layout)
+							})
+						}),
+						layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+						// Filter chips with exact counts!
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnFilterAll, fmt.Sprintf("All (%d)", cAll), a.commitFilter == "all", pal)
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnFilterMerges, fmt.Sprintf("Merges (%d)", cMerges), a.commitFilter == "merges", pal)
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnFilterDirect, fmt.Sprintf("Direct (%d)", cDirect), a.commitFilter == "direct", pal)
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnFilterAI, fmt.Sprintf("AI (%d)", cAI), a.commitFilter == "ai", pal)
+								}),
+							)
+						}),
+					)
+				})
 			})
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return drawDivider(gtx, pal.Border)
 		}),
-		// Commits list
+		// Commits List
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			var filtered []models.CommitSummary
 			for _, c := range commits {
@@ -716,7 +723,7 @@ func (a *App) layoutCommitsSidebar(gtx layout.Context, pal Palette) layout.Dimen
 
 			if len(filtered) == 0 {
 				return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.theme, unit.Sp(12), "No commits found")
+					lbl := material.Label(a.theme, unit.Sp(12), "No commits found for this filter")
 					lbl.Color = pal.TextMuted
 					return lbl.Layout(gtx)
 				})
@@ -747,8 +754,8 @@ func (a *App) layoutCommitsSidebar(gtx layout.Context, pal Palette) layout.Dimen
 
 					return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
 						return layout.Inset{
-							Top:    unit.Dp(8),
-							Bottom: unit.Dp(8),
+							Top:    unit.Dp(7),
+							Bottom: unit.Dp(7),
 							Left:   unit.Dp(10),
 							Right:  unit.Dp(10),
 						}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
@@ -821,6 +828,151 @@ func (a *App) layoutCommitsSidebar(gtx layout.Context, pal Palette) layout.Dimen
 	)
 }
 
+func (a *App) layoutUpdatesCenterPanel(gtx layout.Context, pal Palette) layout.Dimensions {
+	a.mu.Lock()
+	up := a.updatesData
+	a.mu.Unlock()
+
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		// Time Slices Header
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawSectionHeader(gtx, "TIME RANGE", pal)
+						}),
+						layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnSlice1h, "1h", a.timePeriod == "1h", pal)
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnSlice24h, "24h", a.timePeriod == "24h", pal)
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnSliceToday, "Today", a.timePeriod == "today", pal)
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnSlice7d, "7d", a.timePeriod == "7d", pal)
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnSliceAll, "All", a.timePeriod == "all", pal)
+								}),
+							)
+						}),
+						layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+						// AI Filter
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnUpFilterAll, "All", a.aiFilter == "all", pal)
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnUpFilterAI, "AI Only", a.aiFilter == "ai_only", pal)
+								}),
+								layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return a.drawPillButton(gtx, &a.btnUpFilterHuman, "Devs", a.aiFilter == "human_only", pal)
+								}),
+							)
+						}),
+					)
+				})
+			})
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return drawDivider(gtx, pal.Border)
+		}),
+		// Feed
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			if up == nil || len(up.Commits) == 0 {
+				return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Label(a.theme, unit.Sp(12), "No commits in this timeframe")
+					lbl.Color = pal.TextMuted
+					return lbl.Layout(gtx)
+				})
+			}
+
+			return a.updatesList.Layout(gtx, len(up.Commits), func(gtx layout.Context, idx int) layout.Dimensions {
+				c := up.Commits[idx]
+				var click *widget.Clickable
+				if idx < len(a.timelineClicks) {
+					click = &a.timelineClicks[idx]
+				} else {
+					click = new(widget.Clickable)
+				}
+
+				return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					bg := pal.Surface
+					if click.Hovered() {
+						bg = pal.Hover
+					}
+
+					return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
+						return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											lbl := material.Label(a.theme, unit.Sp(11), c.AuthorName)
+											lbl.Font.Weight = font.SemiBold
+											lbl.Color = pal.Text
+											return lbl.Layout(gtx)
+										}),
+										layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											if c.IsMerge {
+												return a.drawTag(gtx, "MERGE", pal.Accent, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
+											}
+											if c.IsAI {
+												tag := "AI"
+												if c.AITag != "" {
+													tag = c.AITag
+												}
+												return a.drawTag(gtx, tag, pal.BadgeBg, pal.BadgeText)
+											}
+											return layout.Dimensions{}
+										}),
+										layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											lbl := material.Label(a.theme, unit.Sp(10.5), formatRelativeTime(c.Date))
+											lbl.Color = pal.TextMuted
+											return lbl.Layout(gtx)
+										}),
+									)
+								}),
+								layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Label(a.theme, unit.Sp(11.5), c.Message)
+									lbl.Color = pal.Text
+									return lbl.Layout(gtx)
+								}),
+							)
+						})
+					})
+				})
+			})
+		}),
+	)
+}
+
+// -------------------------------------------------------------
+// PANEL 3: Right Panel (Diff Viewer / Merged Commits / Metrics)
+// -------------------------------------------------------------
+func (a *App) layoutRightPanel(gtx layout.Context, pal Palette) layout.Dimensions {
+	if a.activeTab == "updates" {
+		return a.layoutUpdatesAnalytics(gtx, pal)
+	}
+	return a.layoutCommitDetail(gtx, pal)
+}
+
 func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensions {
 	a.mu.Lock()
 	detail := a.selectedDetail
@@ -828,7 +980,7 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 
 	if detail == nil {
 		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Label(a.theme, unit.Sp(12), "Select a commit")
+			lbl := material.Label(a.theme, unit.Sp(12), "Select a commit from the list to view diffs")
 			lbl.Color = pal.TextMuted
 			return lbl.Layout(gtx)
 		})
@@ -1019,10 +1171,10 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 // Merged commits list inside a merge commit
 func (a *App) layoutMergedCommitsSection(gtx layout.Context, merged []models.CommitSummary, pal Palette) layout.Dimensions {
 	return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.theme, unit.Sp(11), fmt.Sprintf("Commits merged in this pull (%d):", len(merged)))
+					lbl := material.Label(a.theme, unit.Sp(11), fmt.Sprintf("COMMITS MERGED IN THIS PULL (%d):", len(merged)))
 					lbl.Font.Weight = font.Bold
 					lbl.Color = pal.Accent
 					return lbl.Layout(gtx)
@@ -1097,176 +1249,104 @@ func (a *App) drawMergedCommitItems(gtx layout.Context, merged []models.CommitSu
 	return children
 }
 
-func (a *App) layoutUpdatesTab(gtx layout.Context, pal Palette) layout.Dimensions {
+func (a *App) layoutUpdatesAnalytics(gtx layout.Context, pal Palette) layout.Dimensions {
 	a.mu.Lock()
 	up := a.updatesData
 	a.mu.Unlock()
 
 	if up == nil {
 		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			lbl := material.Label(a.theme, unit.Sp(12), "Loading updates...")
+			lbl := material.Label(a.theme, unit.Sp(12), "Loading analytics...")
 			lbl.Color = pal.TextMuted
 			return lbl.Layout(gtx)
 		})
 	}
 
-	return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	return layout.UniformInset(unit.Dp(16)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-			// Filter Bar: Periods + AI Filter
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.drawPillButton(gtx, &a.btnSlice1h, "1h", a.timePeriod == "1h", pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.drawPillButton(gtx, &a.btnSlice24h, "24h", a.timePeriod == "24h", pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.drawPillButton(gtx, &a.btnSliceToday, "Today", a.timePeriod == "today", pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.drawPillButton(gtx, &a.btnSlice3d, "3d", a.timePeriod == "3d", pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.drawPillButton(gtx, &a.btnSlice7d, "7d", a.timePeriod == "7d", pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.drawPillButton(gtx, &a.btnSlice30d, "30d", a.timePeriod == "30d", pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.drawPillButton(gtx, &a.btnSliceAll, "All", a.timePeriod == "all", pal)
-					}),
-
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
-
-					// AI vs Devs filter
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.drawPillButton(gtx, &a.btnUpFilterAll, "All", a.aiFilter == "all", pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.drawPillButton(gtx, &a.btnUpFilterAI, "AI Only", a.aiFilter == "ai_only", pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return a.drawPillButton(gtx, &a.btnUpFilterHuman, "Devs", a.aiFilter == "human_only", pal)
-					}),
-				)
+				lbl := material.Label(a.theme, unit.Sp(14), "Activity Overview")
+				lbl.Font.Weight = font.Bold
+				lbl.Color = pal.Text
+				return lbl.Layout(gtx)
 			}),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
-
 			// Metric Cards Row
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-						return a.drawMetricCard(gtx, "Commits", fmt.Sprintf("%d", up.TotalCommits), fmt.Sprintf("%d merges", up.TotalMerges), pal)
+						return a.drawMetricCard(gtx, "COMMITS", fmt.Sprintf("%d", up.TotalCommits), fmt.Sprintf("%d merges", up.TotalMerges), pal)
 					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
 					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-						return a.drawMetricCard(gtx, "AI vs Devs", fmt.Sprintf("%d / %d", up.AICommitsCount, up.HumanCommitsCount), "activity", pal)
+						return a.drawMetricCard(gtx, "AI VS DEVS", fmt.Sprintf("%d / %d", up.AICommitsCount, up.HumanCommitsCount), "commits", pal)
 					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
 					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-						return a.drawMetricCard(gtx, "Volume", fmt.Sprintf("+%d -%d", up.TotalAdditions, up.TotalDeletions), "lines changed", pal)
+						return a.drawMetricCard(gtx, "LINES", fmt.Sprintf("+%d -%d", up.TotalAdditions, up.TotalDeletions), "volume", pal)
 					}),
 				)
 			}),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return drawDivider(gtx, pal.Border)
+			}),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
-
-			// Updates Content: Timeline Feed
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return a.drawSectionHeader(gtx, "ACTIVE CONTRIBUTORS", pal)
+			}),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+			// Authors List
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-				if len(up.Commits) == 0 {
-					return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Label(a.theme, unit.Sp(12), "No commits in this timeframe")
-						lbl.Color = pal.TextMuted
-						return lbl.Layout(gtx)
-					})
-				}
-
-				return a.updatesList.Layout(gtx, len(up.Commits), func(gtx layout.Context, idx int) layout.Dimensions {
-					c := up.Commits[idx]
-					var click *widget.Clickable
-					if idx < len(a.timelineClicks) {
-						click = &a.timelineClicks[idx]
-					} else {
-						click = new(widget.Clickable)
-					}
-
-					return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						bg := pal.Surface
-						if click.Hovered() {
-							bg = pal.Hover
-						}
-
-						return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
-							return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Label(a.theme, unit.Sp(11.5), c.AuthorName)
-												lbl.Font.Weight = font.SemiBold
-												lbl.Color = pal.Text
-												return lbl.Layout(gtx)
-											}),
-											layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												if c.IsMerge {
-													return a.drawTag(gtx, "MERGE", pal.Accent, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
-												}
-												if c.IsAI {
-													tag := "AI"
-													if c.AITag != "" {
-														tag = c.AITag
-													}
-													return a.drawTag(gtx, tag, pal.BadgeBg, pal.BadgeText)
-												}
-												return layout.Dimensions{}
-											}),
-											layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Label(a.theme, unit.Sp(10.5), formatRelativeTime(c.Date))
-												lbl.Color = pal.TextMuted
-												return lbl.Layout(gtx)
-											}),
-										)
-									}),
-									layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
-									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										lbl := material.Label(a.theme, unit.Sp(12), c.Message)
-										lbl.Color = pal.Text
-										return lbl.Layout(gtx)
-									}),
-									layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
-									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Label(a.theme, unit.Sp(10.5), c.ShortHash)
-												lbl.Color = pal.TextMuted
-												return lbl.Layout(gtx)
-											}),
-											layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Label(a.theme, unit.Sp(10.5), fmt.Sprintf("+%d -%d", c.Additions, c.Deletions))
-												lbl.Color = pal.TextMuted
-												return lbl.Layout(gtx)
-											}),
-										)
-									}),
-								)
-							})
-						})
-					})
-				})
+				return a.drawAuthorsList(gtx, up.Authors, pal)
 			}),
 		)
 	})
+}
+
+func (a *App) drawAuthorsList(gtx layout.Context, authors []models.AuthorStat, pal Palette) layout.Dimensions {
+	if len(authors) == 0 {
+		return layout.Dimensions{}
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		a.drawAuthorItems(gtx, authors, pal)...,
+	)
+}
+
+func (a *App) drawAuthorItems(gtx layout.Context, authors []models.AuthorStat, pal Palette) []layout.FlexChild {
+	var children []layout.FlexChild
+	for _, aut := range authors {
+		author := aut
+		children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
+				return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Label(a.theme, unit.Sp(11.5), author.Name)
+							lbl.Font.Weight = font.SemiBold
+							lbl.Color = pal.Text
+							return lbl.Layout(gtx)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							if author.IsAI {
+								return a.drawTag(gtx, "AI", pal.BadgeBg, pal.BadgeText)
+							}
+							return layout.Dimensions{}
+						}),
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Label(a.theme, unit.Sp(11), fmt.Sprintf("%d commits  (+%d -%d)", author.CommitCount, author.Additions, author.Deletions))
+							lbl.Color = pal.TextMuted
+							return lbl.Layout(gtx)
+						}),
+					)
+				})
+			})
+		}))
+		children = append(children, layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout))
+	}
+	return children
 }
 
 func (a *App) layoutEmptyState(gtx layout.Context, pal Palette) layout.Dimensions {
@@ -1285,6 +1365,65 @@ func (a *App) layoutEmptyState(gtx layout.Context, pal Palette) layout.Dimension
 	})
 }
 
+// -------------------------------------------------------------
+// UI Helpers
+// -------------------------------------------------------------
+func (a *App) drawSectionHeader(gtx layout.Context, title string, pal Palette) layout.Dimensions {
+	lbl := material.Label(a.theme, unit.Sp(9.5), title)
+	lbl.Font.Weight = font.Bold
+	lbl.Color = pal.TextMuted
+	return lbl.Layout(gtx)
+}
+
+func (a *App) drawNavRow(gtx layout.Context, btn *widget.Clickable, title string, active bool, pal Palette) layout.Dimensions {
+	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		bg := pal.HeaderBg
+		fg := pal.TextMuted
+		if active {
+			bg = pal.Selected
+			fg = pal.Accent
+		} else if btn.Hovered() {
+			bg = pal.Hover
+			fg = pal.Text
+		}
+
+		return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				lbl := material.Label(a.theme, unit.Sp(11), title)
+				lbl.Color = fg
+				if active {
+					lbl.Font.Weight = font.Bold
+				} else {
+					lbl.Font.Weight = font.Medium
+				}
+				return lbl.Layout(gtx)
+			})
+		})
+	})
+}
+
+func (a *App) drawTreeItem(gtx layout.Context, name string, active, isRoot bool, pal Palette) layout.Dimensions {
+	bg := pal.HeaderBg
+	fg := pal.Text
+	if active {
+		bg = pal.Selected
+		fg = pal.Accent
+	}
+
+	return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			prefix := "📁 "
+			if !isRoot {
+				prefix = "  └ "
+			}
+			lbl := material.Label(a.theme, unit.Sp(11), prefix+name)
+			lbl.Color = fg
+			lbl.Font.Weight = font.SemiBold
+			return lbl.Layout(gtx)
+		})
+	})
+}
+
 func (a *App) drawPillButton(gtx layout.Context, btn *widget.Clickable, txt string, active bool, pal Palette) layout.Dimensions {
 	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		bg := pal.Surface
@@ -1299,7 +1438,7 @@ func (a *App) drawPillButton(gtx layout.Context, btn *widget.Clickable, txt stri
 
 		return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				lbl := material.Label(a.theme, unit.Sp(11), txt)
+				lbl := material.Label(a.theme, unit.Sp(10.5), txt)
 				lbl.Color = fg
 				lbl.Font.Weight = font.Medium
 				return lbl.Layout(gtx)
@@ -1321,14 +1460,15 @@ func (a *App) drawTag(gtx layout.Context, txt string, bg, fg color.NRGBA) layout
 
 func (a *App) drawMetricCard(gtx layout.Context, title, val, sub string, pal Palette) layout.Dimensions {
 	return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
-		return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.theme, unit.Sp(10.5), title)
+					lbl := material.Label(a.theme, unit.Sp(10), title)
 					lbl.Color = pal.TextMuted
+					lbl.Font.Weight = font.Bold
 					return lbl.Layout(gtx)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					lbl := material.Label(a.theme, unit.Sp(16), val)
 					lbl.Font.Weight = font.Bold

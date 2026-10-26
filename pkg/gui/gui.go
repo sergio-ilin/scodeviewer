@@ -2231,17 +2231,34 @@ func (a *App) layoutEmptyState(gtx layout.Context, pal Palette) layout.Dimension
 // -------------------------------------------------------------
 func (a *App) createListStyle(state *widget.List, pal Palette) material.ListStyle {
 	ls := material.List(a.theme, state)
-	ls.AnchorStrategy = material.Overlay
-	ls.Indicator.MinorWidth = unit.Dp(6)
-	ls.Indicator.CornerRadius = unit.Dp(3)
+
+	if state.Axis == layout.Horizontal {
+		ls.AnchorStrategy = material.Overlay
+		ls.Indicator.MinorWidth = unit.Dp(4)
+		ls.Indicator.CornerRadius = unit.Dp(2)
+		ls.Indicator.Color = pal.TextMuted
+		ls.Indicator.HoverColor = pal.Accent
+		ls.Track.Color = color.NRGBA{0, 0, 0, 0}
+		return ls
+	}
+
+	// Vertical lists: Occupy strategy with dedicated gutter track and distinct visible thumb
+	ls.AnchorStrategy = material.Occupy
+	ls.Indicator.MinorWidth = unit.Dp(8)
+	ls.Indicator.CornerRadius = unit.Dp(4)
+	ls.Indicator.MajorMinLen = unit.Dp(36)
+	ls.Track.MinorPadding = unit.Dp(2)
+	ls.Track.MajorPadding = unit.Dp(2)
+
 	if pal.IsDark {
-		ls.Indicator.Color = color.NRGBA{R: 110, G: 118, B: 129, A: 160}
+		ls.Track.Color = color.NRGBA{R: 16, G: 20, B: 26, A: 255}
+		ls.Indicator.Color = color.NRGBA{R: 90, G: 105, B: 125, A: 255}
 		ls.Indicator.HoverColor = pal.Accent
 	} else {
-		ls.Indicator.Color = color.NRGBA{R: 140, G: 149, B: 159, A: 180}
+		ls.Track.Color = color.NRGBA{R: 238, G: 240, B: 244, A: 255}
+		ls.Indicator.Color = color.NRGBA{R: 160, G: 170, B: 185, A: 255}
 		ls.Indicator.HoverColor = pal.Accent
 	}
-	ls.Track.Color = color.NRGBA{0, 0, 0, 0}
 	return ls
 }
 

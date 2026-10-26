@@ -65,8 +65,18 @@ type DiffFile struct {
 // CommitDetail contains full commit data with parsed diffs
 type CommitDetail struct {
 	CommitSummary
-	FullMessage string     `json:"fullMessage"`
-	Files       []DiffFile `json:"files"`
+	FullMessage   string          `json:"fullMessage"`
+	Files         []DiffFile      `json:"files"`
+	MergedCommits []CommitSummary `json:"mergedCommits,omitempty"`
+}
+
+// SubRepo represents a discovered root or nested git repository
+type SubRepo struct {
+	Name          string `json:"name"`
+	Path          string `json:"path"`
+	RelPath       string `json:"relPath"`
+	IsRoot        bool   `json:"isRoot"`
+	CurrentBranch string `json:"currentBranch"`
 }
 
 // TimeSliceQuery represents filtering parameters for updates

@@ -2,3 +2,5 @@ scodeviewer.exe
 *.exe
 .vscode/
 .idea/
+test_nested_repo/
+

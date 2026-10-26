@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,6 +18,73 @@ import (
 
 const sep = "\x1f"
 const commitDelim = "@@__COMMIT_START__@@"
+
+// FindGitRepositories scans rootPath and subdirectories for git repositories
+func (s *Service) FindGitRepositories(rootPath string) ([]models.SubRepo, error) {
+	var repos []models.SubRepo
+	cleanRoot := filepath.Clean(rootPath)
+
+	// Check root
+	if s.IsGitRepo(cleanRoot) {
+		branch, _ := s.GetCurrentBranch(cleanRoot)
+		repos = append(repos, models.SubRepo{
+			Name:          filepath.Base(cleanRoot) + " (root)",
+			Path:          cleanRoot,
+			RelPath:       ".",
+			IsRoot:        true,
+			CurrentBranch: branch,
+		})
+	}
+
+	// Walk up to 4 levels deep to find nested repos (submodules, microservices, etc.)
+	_ = filepath.WalkDir(cleanRoot, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if p == cleanRoot {
+			return nil
+		}
+
+		name := d.Name()
+		// Skip known non-repo vendor/cache directories
+		if name == ".git" || name == "node_modules" || name == "vendor" || name == ".idea" ||
+			name == ".vscode" || name == "dist" || name == "bin" || name == "obj" ||
+			name == ".next" || name == "target" || name == ".venv" {
+			return filepath.SkipDir
+		}
+
+		// Calculate depth relative to cleanRoot
+		rel, errRel := filepath.Rel(cleanRoot, p)
+		if errRel != nil {
+			return nil
+		}
+		depth := strings.Count(rel, string(filepath.Separator))
+		if depth > 4 {
+			return filepath.SkipDir
+		}
+
+		// Check if this subdirectory is a git repo
+		gitDir := filepath.Join(p, ".git")
+		if _, statErr := os.Stat(gitDir); statErr == nil {
+			branch, _ := s.GetCurrentBranch(p)
+			repos = append(repos, models.SubRepo{
+				Name:          filepath.Base(p),
+				Path:          p,
+				RelPath:       filepath.ToSlash(rel),
+				IsRoot:        false,
+				CurrentBranch: branch,
+			})
+			return filepath.SkipDir // Don't look inside nested .git
+		}
+
+		return nil
+	})
+
+	return repos, nil
+}
 
 // Service wraps git CLI interactions
 type Service struct{}
@@ -217,6 +286,23 @@ func (s *Service) GetCommitDetail(repoPath string, hash string) (*models.CommitD
 	files := ParseUnifiedDiff(diffOut)
 	adds, dels := DiffFileSummary(files)
 
+	var mergedCommits []models.CommitSummary
+	if len(parents) > 1 {
+		// Log the commits merged by this merge commit (parent[0]..hash)
+		rangeSpec := fmt.Sprintf("%s..%s", parents[0], hash)
+		logArgs := []string{
+			"log",
+			fmt.Sprintf("--format=%s%%H%s%%h%s%%P%s%%an%s%%ae%s%%at%s%%s", commitDelim, sep, sep, sep, sep, sep, sep),
+			"--numstat",
+			"-n50",
+			rangeSpec,
+		}
+		mergedOut, errLog := s.runGit(ctx, repoPath, logArgs...)
+		if errLog == nil {
+			mergedCommits = parseCommitsWithNumstat(mergedOut)
+		}
+	}
+
 	return &models.CommitDetail{
 		CommitSummary: models.CommitSummary{
 			Hash:         h,
@@ -233,8 +319,9 @@ func (s *Service) GetCommitDetail(repoPath string, hash string) (*models.CommitD
 			Additions:    adds,
 			Deletions:    dels,
 		},
-		FullMessage: body,
-		Files:       files,
+		FullMessage:   body,
+		Files:         files,
+		MergedCommits: mergedCommits,
 	}, nil
 }
 

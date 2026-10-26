@@ -336,19 +336,30 @@ func (a *App) updateProjectStatuses() {
 	a.mu.Lock()
 	projs := make([]models.Project, len(a.projects))
 	copy(projs, a.projects)
+	subRepos := make([]models.SubRepo, len(a.subRepos))
+	copy(subRepos, a.subRepos)
 	a.mu.Unlock()
 
+	pathsToCheck := make(map[string]bool)
 	for _, p := range projs {
-		if p.Path == "" {
-			continue
+		if p.Path != "" {
+			pathsToCheck[p.Path] = true
 		}
-		hasUncommitted, hasRecent, lastDate, err := a.gitSvc.GetProjectStatus(p.Path)
+	}
+	for _, r := range subRepos {
+		if r.Path != "" {
+			pathsToCheck[r.Path] = true
+		}
+	}
+
+	for p := range pathsToCheck {
+		hasUncommitted, hasRecent, lastDate, err := a.gitSvc.GetProjectStatus(p)
 		if err == nil {
 			a.mu.Lock()
 			if a.projStatuses == nil {
 				a.projStatuses = make(map[string]ProjectStatus)
 			}
-			a.projStatuses[p.Path] = ProjectStatus{
+			a.projStatuses[p] = ProjectStatus{
 				HasUncommitted: hasUncommitted,
 				HasRecent30d:   hasRecent,
 				LastCommitDate: lastDate,
@@ -941,8 +952,8 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 			// Panel 1: Left Navigation Sidebar
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				gtx.Constraints.Min.X = gtx.Dp(unit.Dp(265))
-				gtx.Constraints.Max.X = gtx.Dp(unit.Dp(265))
+				gtx.Constraints.Min.X = gtx.Dp(unit.Dp(290))
+				gtx.Constraints.Max.X = gtx.Dp(unit.Dp(290))
 				return a.layoutLeftSidebar(gtx, pal)
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -956,14 +967,14 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 	}
 
 	// Professional 3-Panel Architecture:
-	// Panel 1 (Left 265dp): Persistent Workspaces + Sub-repos + Branches + Views
+	// Panel 1 (Left 290dp): Persistent Workspaces + Sub-repos + Branches + Views
 	// Panel 2 (Middle 380dp): Commits & Merges with Uncommitted Changes + Counts
 	// Panel 3 (Right flexed): Diff Viewer / Merged Commits / Analytics
 	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 		// Panel 1: Left Navigation Sidebar
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			gtx.Constraints.Min.X = gtx.Dp(unit.Dp(265))
-			gtx.Constraints.Max.X = gtx.Dp(unit.Dp(265))
+			gtx.Constraints.Min.X = gtx.Dp(unit.Dp(290))
+			gtx.Constraints.Max.X = gtx.Dp(unit.Dp(290))
 			return a.layoutLeftSidebar(gtx, pal)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -1004,13 +1015,13 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 	searchBranch := strings.ToLower(strings.TrimSpace(a.searchBranchesEditor.Text()))
 
 	return drawWithBg(gtx, pal.HeaderBg, func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Inset{Top: unit.Dp(16), Bottom: unit.Dp(16), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				// App Brand
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							lbl := material.Label(a.theme, unit.Sp(13.5), "sCodeViewer")
+							lbl := material.Label(a.theme, unit.Sp(14), "sCodeViewer")
 							lbl.Color = pal.Text
 							lbl.Font.Weight = font.Bold
 							return lbl.Layout(gtx)
@@ -1021,33 +1032,33 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 						}),
 					)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return drawDivider(gtx, pal.Border)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
 
 				// VIEW SWITCHER
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return a.drawSectionHeader(gtx, "VIEWS", pal)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return a.drawNavRow(gtx, &a.btnTabCommits, "Commits & Merges", a.activeTab == "commits", pal)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return a.drawNavRow(gtx, &a.btnTabUpdates, "Activity & Updates", a.activeTab == "updates", pal)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return a.drawNavRow(gtx, &a.btnTab3DGraph, "3D Topology Graph", a.activeTab == "graph3d", pal)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return drawDivider(gtx, pal.Border)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
 
 				// PERSISTENT PROJECTS / WORKSPACES SECTION
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -1057,7 +1068,7 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 						}),
 					)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 
 				// Search Projects Input (if multiple projects)
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -1068,14 +1079,14 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 					ed.TextSize = unit.Sp(10.5)
 					ed.Color = pal.Text
 					ed.HintColor = pal.TextMuted
-					return layout.Inset{Bottom: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return drawWithRoundedBg(gtx, pal.Bg, unit.Dp(4), func(gtx layout.Context) layout.Dimensions {
-							return layout.UniformInset(unit.Dp(6)).Layout(gtx, ed.Layout)
+					return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return drawWithRoundedBg(gtx, pal.Bg, unit.Dp(5), func(gtx layout.Context) layout.Dimensions {
+							return layout.UniformInset(unit.Dp(7)).Layout(gtx, ed.Layout)
 						})
 					})
 				}),
 
-				// Projects List (with active highlight, rename, delete)
+				// Projects List (with nested sub-repositories directly beneath the active project)
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return a.createListStyle(&a.projectsList, pal).Layout(gtx, len(projects), func(gtx layout.Context, idx int) layout.Dimensions {
 						p := projects[idx]
@@ -1112,18 +1123,19 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 							btnDelete = new(widget.Clickable)
 						}
 
-						return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							bg := pal.HeaderBg
-							if isActive {
-								bg = pal.Selected
-							} else if click.Hovered() {
-								bg = pal.Hover
-							}
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							// Project Header Row
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									bg := pal.HeaderBg
+									if isActive {
+										bg = pal.Selected
+									} else if click.Hovered() {
+										bg = pal.Hover
+									}
 
-							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									return drawWithRoundedBg(gtx, bg, unit.Dp(4), func(gtx layout.Context) layout.Dimensions {
-										return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									return drawWithRoundedBg(gtx, bg, unit.Dp(5), func(gtx layout.Context) layout.Dimensions {
+										return layout.Inset{Top: unit.Dp(7), Bottom: unit.Dp(7), Left: unit.Dp(10), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 											return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 													iconCol := pal.TextMuted
@@ -1141,7 +1153,7 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 													}
 													return a.icons.Layout(gtx, a.icons.Folder, iconCol, unit.Dp(13))
 												}),
-												layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+												layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 												layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 													lbl := material.Label(a.theme, unit.Sp(11), p.Name)
 													if isActive {
@@ -1196,60 +1208,31 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 											)
 										})
 									})
-								}),
-								layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
-							)
-						})
-					})
-				}),
-
-				// NESTED SUB-REPOSITORIES (if active project has nested repos)
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					if len(subRepos) <= 1 {
-						return layout.Dimensions{}
-					}
-					return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return a.drawSectionHeader(gtx, fmt.Sprintf("SUB-REPOSITORIES (%d)", len(subRepos)), pal)
-							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return a.createListStyle(&a.subReposList, pal).Layout(gtx, len(subRepos), func(gtx layout.Context, idx int) layout.Dimensions {
-									r := subRepos[idx]
-									isActive := r.Path == activeRepo
-									var click *widget.Clickable
-									if idx < len(a.subRepoClicks) {
-										click = &a.subRepoClicks[idx]
-									} else {
-										click = new(widget.Clickable)
-									}
-
-									name := r.Name
-									if !r.IsRoot && r.RelPath != "" {
-										name = "└ " + r.RelPath
-									}
-
-									return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-										return a.drawNavRow(gtx, click, name, isActive, pal)
-									})
 								})
 							}),
+							// Nested sub-repositories directly beneath their own parent project
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								if !isActive || len(subRepos) <= 1 {
+									return layout.Dimensions{}
+								}
+								return a.layoutProjectSubRepos(gtx, subRepos, activeRepo, projStatuses, pal)
+							}),
+							layout.Rigid(layout.Spacer{Height: unit.Dp(5)}.Layout),
 						)
 					})
 				}),
 
-				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return drawDivider(gtx, pal.Border)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
 
 				// BRANCHES SECTION (Searchable, with Author and Last Update)
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return a.drawSectionHeader(gtx, fmt.Sprintf("BRANCHES (%d)", len(branches)), pal)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 
 				// Search Branches Input
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -1257,9 +1240,9 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 					ed.TextSize = unit.Sp(10.5)
 					ed.Color = pal.Text
 					ed.HintColor = pal.TextMuted
-					return layout.Inset{Bottom: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return drawWithRoundedBg(gtx, pal.Bg, unit.Dp(4), func(gtx layout.Context) layout.Dimensions {
-							return layout.UniformInset(unit.Dp(6)).Layout(gtx, ed.Layout)
+					return layout.Inset{Bottom: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return drawWithRoundedBg(gtx, pal.Bg, unit.Dp(5), func(gtx layout.Context) layout.Dimensions {
+							return layout.UniformInset(unit.Dp(7)).Layout(gtx, ed.Layout)
 						})
 					})
 				}),
@@ -1387,12 +1370,115 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 									})
 								})
 							}),
-							layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
+							layout.Rigid(layout.Spacer{Height: unit.Dp(5)}.Layout),
 						)
 					})
 				}),
 			)
 		})
+	})
+}
+
+func (a *App) layoutProjectSubRepos(gtx layout.Context, subRepos []models.SubRepo, activeRepo string, projStatuses map[string]ProjectStatus, pal Palette) layout.Dimensions {
+	if len(subRepos) <= 1 {
+		return layout.Dimensions{}
+	}
+
+	return layout.Inset{Left: unit.Dp(14), Top: unit.Dp(3), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+			// Left vertical branch line connector
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				guideCol := color.NRGBA{R: pal.Border.R, G: pal.Border.G, B: pal.Border.B, A: 160}
+				return drawVerticalDivider(gtx, guideCol)
+			}),
+			layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+			// Sub-repos column
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				var children []layout.FlexChild
+				for i := range subRepos {
+					sIdx := i
+					r := subRepos[sIdx]
+					isActiveSub := r.Path == activeRepo
+					stSub := projStatuses[r.Path]
+
+					var click *widget.Clickable
+					if sIdx < len(a.subRepoClicks) {
+						click = &a.subRepoClicks[sIdx]
+					} else {
+						click = new(widget.Clickable)
+					}
+
+					children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							bg := color.NRGBA{}
+							if isActiveSub {
+								bg = pal.Selected
+							} else if click.Hovered() {
+								bg = pal.Hover
+							}
+
+							return drawWithRoundedBg(gtx, bg, unit.Dp(4), func(gtx layout.Context) layout.Dimensions {
+								return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											connector := "└ "
+											if sIdx < len(subRepos)-1 {
+												connector = "├ "
+											}
+											lbl := material.Label(a.theme, unit.Sp(10), connector)
+											lbl.Color = pal.TextMuted
+											return lbl.Layout(gtx)
+										}),
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											iconCol := pal.TextMuted
+											if isActiveSub {
+												iconCol = pal.Accent
+											} else if stSub.HasUncommitted {
+												iconCol = pal.AddText
+											} else if stSub.HasRecent30d {
+												iconCol = pal.Accent
+											}
+											return a.icons.Layout(gtx, a.icons.Folder, iconCol, unit.Dp(11.5))
+										}),
+										layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+										layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+											name := r.RelPath
+											if r.IsRoot || name == "" {
+												name = "(root)"
+											}
+											lbl := material.Label(a.theme, unit.Sp(10.5), name)
+											if isActiveSub {
+												lbl.Color = pal.Accent
+												lbl.Font.Weight = font.Bold
+											} else if stSub.HasUncommitted {
+												lbl.Color = pal.Text
+												lbl.Font.Weight = font.SemiBold
+											} else {
+												lbl.Color = pal.TextMuted
+												lbl.Font.Weight = font.Normal
+											}
+											return lbl.Layout(gtx)
+										}),
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											if stSub.HasUncommitted {
+												return layout.Inset{Left: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+													return a.drawTag(gtx, "MOD", pal.AddBg, pal.AddText)
+												})
+											}
+											return layout.Dimensions{}
+										}),
+									)
+								})
+							})
+						})
+					}))
+					if sIdx < len(subRepos)-1 {
+						children = append(children, layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout))
+					}
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+			}),
+		)
 	})
 }
 
@@ -2762,10 +2848,10 @@ func (a *App) drawCopyBadge(gtx layout.Context, btn *widget.Clickable, hashToCop
 }
 
 func (a *App) drawSectionHeader(gtx layout.Context, title string, pal Palette) layout.Dimensions {
-	lbl := material.Label(a.theme, unit.Sp(9), title)
+	lbl := material.Label(a.theme, unit.Sp(10), title)
 	lbl.Font.Weight = font.Bold
 	lbl.Color = pal.TextMuted
-	return lbl.Layout(gtx)
+	return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, lbl.Layout)
 }
 
 func (a *App) drawNavRow(gtx layout.Context, btn *widget.Clickable, title string, active bool, pal Palette) layout.Dimensions {
@@ -2780,8 +2866,8 @@ func (a *App) drawNavRow(gtx layout.Context, btn *widget.Clickable, title string
 			fg = pal.Text
 		}
 
-		return drawWithRoundedBg(gtx, bg, unit.Dp(5), func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(7), Bottom: unit.Dp(7), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return drawWithRoundedBg(gtx, bg, unit.Dp(6), func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				lbl := material.Label(a.theme, unit.Sp(11), title)
 				lbl.Color = fg
 				if active {

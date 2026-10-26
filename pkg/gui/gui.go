@@ -1036,9 +1036,10 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 
 						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return drawVerticalDivider(gtx, pal.Border)
-							})
+							w := gtx.Dp(unit.Dp(1))
+							h := gtx.Dp(unit.Dp(18))
+							paint.FillShape(gtx.Ops, pal.Border, clip.Rect(image.Rect(0, 0, w, h)).Op())
+							return layout.Dimensions{Size: image.Pt(w, h)}
 						}),
 						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
 
@@ -1395,100 +1396,100 @@ func (a *App) layoutProjectSubRepos(gtx layout.Context, subRepos []models.SubRep
 	}
 
 	return layout.Inset{Left: unit.Dp(14), Top: unit.Dp(3), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-			// Left vertical branch line connector
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				guideCol := color.NRGBA{R: pal.Border.R, G: pal.Border.G, B: pal.Border.B, A: 160}
-				return drawVerticalDivider(gtx, guideCol)
-			}),
-			layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
-			// Sub-repos column
-			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-				var children []layout.FlexChild
-				for i := range subRepos {
-					sIdx := i
-					r := subRepos[sIdx]
-					isActiveSub := r.Path == activeRepo
-					stSub := projStatuses[r.Path]
+		m := op.Record(gtx.Ops)
+		dims := layout.Inset{Left: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			var children []layout.FlexChild
+			for i := range subRepos {
+				sIdx := i
+				r := subRepos[sIdx]
+				isActiveSub := r.Path == activeRepo
+				stSub := projStatuses[r.Path]
 
-					var click *widget.Clickable
-					if sIdx < len(a.subRepoClicks) {
-						click = &a.subRepoClicks[sIdx]
-					} else {
-						click = new(widget.Clickable)
-					}
+				var click *widget.Clickable
+				if sIdx < len(a.subRepoClicks) {
+					click = &a.subRepoClicks[sIdx]
+				} else {
+					click = new(widget.Clickable)
+				}
 
-					children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							bg := color.NRGBA{}
-							if isActiveSub {
-								bg = pal.Selected
-							} else if click.Hovered() {
-								bg = pal.Hover
-							}
+				children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						bg := color.NRGBA{}
+						if isActiveSub {
+							bg = pal.Selected
+						} else if click.Hovered() {
+							bg = pal.Hover
+						}
 
-							return drawWithRoundedBg(gtx, bg, unit.Dp(4), func(gtx layout.Context) layout.Dimensions {
-								return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-											connector := "└ "
-											if sIdx < len(subRepos)-1 {
-												connector = "├ "
-											}
-											lbl := material.Label(a.theme, unit.Sp(10), connector)
+						return drawWithRoundedBg(gtx, bg, unit.Dp(4), func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										connector := "└ "
+										if sIdx < len(subRepos)-1 {
+											connector = "├ "
+										}
+										lbl := material.Label(a.theme, unit.Sp(10), connector)
+										lbl.Color = pal.TextMuted
+										return lbl.Layout(gtx)
+									}),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										iconCol := pal.TextMuted
+										if isActiveSub {
+											iconCol = pal.Accent
+										} else if stSub.HasUncommitted {
+											iconCol = pal.AddText
+										} else if stSub.HasRecent30d {
+											iconCol = pal.Accent
+										}
+										return a.icons.Layout(gtx, a.icons.Folder, iconCol, unit.Dp(11.5))
+									}),
+									layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+									layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+										name := r.RelPath
+										if r.IsRoot || name == "" {
+											name = "(root)"
+										}
+										lbl := material.Label(a.theme, unit.Sp(10.5), name)
+										if isActiveSub {
+											lbl.Color = pal.Accent
+											lbl.Font.Weight = font.Bold
+										} else if stSub.HasUncommitted {
+											lbl.Color = pal.Text
+											lbl.Font.Weight = font.SemiBold
+										} else {
 											lbl.Color = pal.TextMuted
-											return lbl.Layout(gtx)
-										}),
-										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-											iconCol := pal.TextMuted
-											if isActiveSub {
-												iconCol = pal.Accent
-											} else if stSub.HasUncommitted {
-												iconCol = pal.AddText
-											} else if stSub.HasRecent30d {
-												iconCol = pal.Accent
-											}
-											return a.icons.Layout(gtx, a.icons.Folder, iconCol, unit.Dp(11.5))
-										}),
-										layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-										layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-											name := r.RelPath
-											if r.IsRoot || name == "" {
-												name = "(root)"
-											}
-											lbl := material.Label(a.theme, unit.Sp(10.5), name)
-											if isActiveSub {
-												lbl.Color = pal.Accent
-												lbl.Font.Weight = font.Bold
-											} else if stSub.HasUncommitted {
-												lbl.Color = pal.Text
-												lbl.Font.Weight = font.SemiBold
-											} else {
-												lbl.Color = pal.TextMuted
-												lbl.Font.Weight = font.Normal
-											}
-											return lbl.Layout(gtx)
-										}),
-										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-											if stSub.HasUncommitted {
-												return layout.Inset{Left: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-													return a.drawTag(gtx, "MOD", pal.AddBg, pal.AddText)
-												})
-											}
-											return layout.Dimensions{}
-										}),
-									)
-								})
+											lbl.Font.Weight = font.Normal
+										}
+										return lbl.Layout(gtx)
+									}),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										if stSub.HasUncommitted {
+											return layout.Inset{Left: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+												return a.drawTag(gtx, "MOD", pal.AddBg, pal.AddText)
+											})
+										}
+										return layout.Dimensions{}
+									}),
+								)
 							})
 						})
-					}))
-					if sIdx < len(subRepos)-1 {
-						children = append(children, layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout))
-					}
+					})
+				}))
+				if sIdx < len(subRepos)-1 {
+					children = append(children, layout.Rigid(layout.Spacer{Height: unit.Dp(2)}.Layout))
 				}
-				return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
-			}),
-		)
+			}
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
+		})
+		call := m.Stop()
+
+		// Draw subtle vertical tree guide line matching the actual height of the subrepos column
+		guideCol := color.NRGBA{R: pal.Border.R, G: pal.Border.G, B: pal.Border.B, A: 160}
+		lineW := gtx.Dp(unit.Dp(1))
+		paint.FillShape(gtx.Ops, guideCol, clip.Rect(image.Rect(0, 0, lineW, dims.Size.Y)).Op())
+		call.Add(gtx.Ops)
+		return dims
 	})
 }
 

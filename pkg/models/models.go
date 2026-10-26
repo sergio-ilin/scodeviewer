@@ -4,28 +4,31 @@ import "time"
 
 // Project represents a tracked git repository folder
 type Project struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Path       string    `json:"path"`
-	LastOpened time.Time `json:"lastOpened"`
-	AddedAt    time.Time `json:"addedAt"`
-	IsGit      bool      `json:"isGit"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Path           string    `json:"path"`
+	LastOpened     time.Time `json:"lastOpened"`
+	AddedAt        time.Time `json:"addedAt"`
+	IsGit          bool      `json:"isGit"`
+	PinnedBranches []string  `json:"pinnedBranches,omitempty"`
+	PinnedCommits  []string  `json:"pinnedCommits,omitempty"`
 }
 
 // Config stores global configuration and list of projects
 type Config struct {
-	Projects       []Project `json:"projects"`
-	ActivePath     string    `json:"activePath"`
-	ThemePreference string   `json:"themePreference"` // "system", "dark", "light"
+	Projects        []Project `json:"projects"`
+	ActivePath      string    `json:"activePath"`
+	ThemePreference string    `json:"themePreference"` // "system", "dark", "light"
 }
 
 // CommitSummary represents commit info in log/timeline
 type CommitSummary struct {
-	Hash           string    `json:"hash"`
-	ShortHash      string    `json:"shortHash"`
-	ParentHashes   []string  `json:"parentHashes"`
-	IsMerge        bool      `json:"isMerge"`
-	AuthorName     string    `json:"authorName"`
+	Hash         string    `json:"hash"`
+	ShortHash    string    `json:"shortHash"`
+	ParentHashes []string  `json:"parentHashes"`
+	IsMerge      bool      `json:"isMerge"`
+	IsPinned     bool      `json:"isPinned,omitempty"`
+	AuthorName   string    `json:"authorName"`
 	AuthorEmail    string    `json:"authorEmail"`
 	Date           time.Time `json:"date"`
 	Message        string    `json:"message"`
@@ -121,6 +124,7 @@ type BranchInfo struct {
 	Name       string `json:"name"`
 	IsCurrent  bool   `json:"isCurrent"`
 	IsRemote   bool   `json:"isRemote"`
+	IsPinned   bool   `json:"isPinned,omitempty"`
 	LastUpdate string `json:"lastUpdate,omitempty"`
 	LastAuthor string `json:"lastAuthor,omitempty"`
 }

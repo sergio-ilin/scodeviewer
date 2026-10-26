@@ -152,6 +152,73 @@ func (m *Manager) RenameProject(idOrPath string, newName string) bool {
 	return false
 }
 
+func (m *Manager) TogglePinBranch(repoPath string, branch string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cleanPath := filepath.Clean(repoPath)
+	for i, p := range m.config.Projects {
+		if p.Path == cleanPath {
+			found := false
+			var updated []string
+			for _, b := range p.PinnedBranches {
+				if b == branch {
+					found = true
+				} else {
+					updated = append(updated, b)
+				}
+			}
+			if !found {
+				updated = append(updated, branch)
+			}
+			m.config.Projects[i].PinnedBranches = updated
+			_ = m.save()
+			return !found
+		}
+	}
+	return false
+}
+
+func (m *Manager) TogglePinCommit(repoPath string, hash string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cleanPath := filepath.Clean(repoPath)
+	for i, p := range m.config.Projects {
+		if p.Path == cleanPath {
+			found := false
+			var updated []string
+			for _, h := range p.PinnedCommits {
+				if h == hash {
+					found = true
+				} else {
+					updated = append(updated, h)
+				}
+			}
+			if !found {
+				updated = append(updated, hash)
+			}
+			m.config.Projects[i].PinnedCommits = updated
+			_ = m.save()
+			return !found
+		}
+	}
+	return false
+}
+
+func (m *Manager) GetPinned(repoPath string) ([]string, []string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	cleanPath := filepath.Clean(repoPath)
+	for _, p := range m.config.Projects {
+		if p.Path == cleanPath {
+			return p.PinnedBranches, p.PinnedCommits
+		}
+	}
+	return nil, nil
+}
+
 func (m *Manager) SetActive(pathOrID string) (models.Project, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

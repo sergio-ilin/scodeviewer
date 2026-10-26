@@ -77,14 +77,15 @@ type App struct {
 	btnAddProject   widget.Clickable
 	btnTabCommits   widget.Clickable
 	btnTabUpdates   widget.Clickable
-	projectClicks   []widget.Clickable
+	projectClicks     []widget.Clickable
 	projectRenameBtns []widget.Clickable
 	projectDeleteBtns []widget.Clickable
-	subRepoClicks   []widget.Clickable
-	branchClicks    []widget.Clickable
-	projectsList    widget.List
-	branchesList    widget.List
-	subReposList    widget.List
+	subRepoClicks     []widget.Clickable
+	branchClicks      []widget.Clickable
+	branchPinBtns     []widget.Clickable
+	projectsList      widget.List
+	branchesList      widget.List
+	subReposList      widget.List
 
 	// UI Widgets - Middle Panel
 	btnFilterAll    widget.Clickable
@@ -93,8 +94,10 @@ type App struct {
 	btnFilterAI     widget.Clickable
 	commitsList     widget.List
 	commitClicks    []widget.Clickable
+	commitPinBtns   []widget.Clickable
 
 	// UI Widgets - Right Panel
+	btnPinSelected widget.Clickable
 	mergedClicks   []widget.Clickable
 	diffList       widget.List
 	updatesList    widget.List
@@ -214,8 +217,36 @@ func (a *App) loadData() {
 
 	// Load branches with last commit author and time
 	branches, _ := a.gitSvc.GetBranches(a.activeRepo)
-	a.branches = branches
-	a.branchClicks = make([]widget.Clickable, len(branches))
+	var pinnedBranches, pinnedCommits []string
+	if a.cfgMgr != nil {
+		targetPath := a.rootPath
+		if targetPath == "" {
+			targetPath = a.activeRepo
+		}
+		pinnedBranches, pinnedCommits = a.cfgMgr.GetPinned(targetPath)
+		if len(pinnedBranches) == 0 && len(pinnedCommits) == 0 && a.activeRepo != targetPath {
+			pinnedBranches, pinnedCommits = a.cfgMgr.GetPinned(a.activeRepo)
+		}
+	}
+
+	pinnedBranchMap := make(map[string]bool)
+	for _, b := range pinnedBranches {
+		pinnedBranchMap[b] = true
+	}
+
+	var pinnedBList, regularBList []models.BranchInfo
+	for _, b := range branches {
+		if pinnedBranchMap[b.Name] {
+			b.IsPinned = true
+			pinnedBList = append(pinnedBList, b)
+		} else {
+			b.IsPinned = false
+			regularBList = append(regularBList, b)
+		}
+	}
+	a.branches = append(pinnedBList, regularBList...)
+	a.branchClicks = make([]widget.Clickable, len(a.branches))
+	a.branchPinBtns = make([]widget.Clickable, len(a.branches))
 
 	curr, _ := a.gitSvc.GetCurrentBranch(a.activeRepo)
 	a.activeBranch = curr
@@ -239,6 +270,12 @@ func (a *App) loadData() {
 			detail, err := a.gitSvc.GetCommitDetail(a.activeRepo, a.selectedHash)
 			if err == nil {
 				a.selectedDetail = detail
+				for _, pc := range pinnedCommits {
+					if pc == detail.Hash || pc == detail.ShortHash {
+						a.selectedDetail.IsPinned = true
+						break
+					}
+				}
 				a.mergedClicks = make([]widget.Clickable, len(detail.MergedCommits))
 			}
 		}
@@ -254,6 +291,22 @@ func (a *App) reloadCommitsLocked() {
 		a.uncommitted = nil
 	}
 
+	var pinnedCommits []string
+	if a.cfgMgr != nil {
+		targetPath := a.rootPath
+		if targetPath == "" {
+			targetPath = a.activeRepo
+		}
+		_, pinnedCommits = a.cfgMgr.GetPinned(targetPath)
+		if len(pinnedCommits) == 0 && a.activeRepo != targetPath {
+			_, pinnedCommits = a.cfgMgr.GetPinned(a.activeRepo)
+		}
+	}
+	pinnedCommitMap := make(map[string]bool)
+	for _, h := range pinnedCommits {
+		pinnedCommitMap[h] = true
+	}
+
 	allCommits, err := a.gitSvc.GetCommits(a.activeRepo, a.activeBranch, "", "", false, 250, 0)
 	if err == nil {
 		a.countAll = len(allCommits)
@@ -264,12 +317,7 @@ func (a *App) reloadCommitsLocked() {
 		a.countDirect = 0
 		a.countAI = 0
 
-		var filtered []models.CommitSummary
-
-		// Put uncommitted changes at top if matches filter
-		if a.uncommitted != nil && (a.commitFilter == "all" || a.commitFilter == "direct") {
-			filtered = append(filtered, a.uncommitted.CommitSummary)
-		}
+		var pinnedList, regularList []models.CommitSummary
 
 		for _, c := range allCommits {
 			if c.IsMerge {
@@ -281,27 +329,46 @@ func (a *App) reloadCommitsLocked() {
 				a.countAI++
 			}
 
+			if pinnedCommitMap[c.Hash] || pinnedCommitMap[c.ShortHash] {
+				c.IsPinned = true
+			}
+
 			// Apply active filter
+			match := false
 			switch a.commitFilter {
 			case "merges":
-				if c.IsMerge {
-					filtered = append(filtered, c)
-				}
+				match = c.IsMerge
 			case "direct":
-				if !c.IsMerge {
-					filtered = append(filtered, c)
-				}
+				match = !c.IsMerge
 			case "ai":
-				if c.IsAI {
-					filtered = append(filtered, c)
-				}
+				match = c.IsAI
 			default:
-				filtered = append(filtered, c)
+				match = true
+			}
+
+			if match {
+				if c.IsPinned {
+					pinnedList = append(pinnedList, c)
+				} else {
+					regularList = append(regularList, c)
+				}
 			}
 		}
 
+		var filtered []models.CommitSummary
+
+		// Put uncommitted changes at top if matches filter
+		if a.uncommitted != nil && (a.commitFilter == "all" || a.commitFilter == "direct") {
+			filtered = append(filtered, a.uncommitted.CommitSummary)
+		}
+		// Pinned commits at top right after uncommitted
+		filtered = append(filtered, pinnedList...)
+		// Regular commits
+		filtered = append(filtered, regularList...)
+
 		a.commits = filtered
 		a.commitClicks = make([]widget.Clickable, len(filtered))
+		a.commitPinBtns = make([]widget.Clickable, len(filtered))
 
 		// Auto select first commit if none or current selected is not in filtered
 		foundSelected := false
@@ -320,12 +387,15 @@ func (a *App) reloadCommitsLocked() {
 				detail, errDetail := a.gitSvc.GetCommitDetail(a.activeRepo, filtered[0].Hash)
 				if errDetail == nil {
 					a.selectedDetail = detail
+					a.selectedDetail.IsPinned = pinnedCommitMap[detail.Hash] || pinnedCommitMap[detail.ShortHash]
 					a.mergedClicks = make([]widget.Clickable, len(detail.MergedCommits))
 				}
 			}
 		} else if len(filtered) == 0 {
 			a.selectedHash = ""
 			a.selectedDetail = nil
+		} else if a.selectedDetail != nil {
+			a.selectedDetail.IsPinned = pinnedCommitMap[a.selectedDetail.Hash] || pinnedCommitMap[a.selectedDetail.ShortHash]
 		}
 	}
 }
@@ -361,6 +431,22 @@ func (a *App) loadCommitDetail(hash string) {
 	if err == nil {
 		a.mu.Lock()
 		a.selectedDetail = detail
+		if a.cfgMgr != nil {
+			targetPath := a.rootPath
+			if targetPath == "" {
+				targetPath = a.activeRepo
+			}
+			_, pinnedCommits := a.cfgMgr.GetPinned(targetPath)
+			if len(pinnedCommits) == 0 && a.activeRepo != targetPath {
+				_, pinnedCommits = a.cfgMgr.GetPinned(a.activeRepo)
+			}
+			for _, pc := range pinnedCommits {
+				if pc == detail.Hash || pc == detail.ShortHash {
+					a.selectedDetail.IsPinned = true
+					break
+				}
+			}
+		}
 		a.mergedClicks = make([]widget.Clickable, len(detail.MergedCommits))
 		a.mu.Unlock()
 		if a.window != nil {
@@ -489,6 +575,27 @@ func (a *App) handleEvents(gtx layout.Context) {
 		}
 	}
 
+	// Branch Pin clicks
+	for i := range a.branchPinBtns {
+		if i < len(a.branches) && a.branchPinBtns[i].Clicked(gtx) {
+			bName := a.branches[i].Name
+			if a.cfgMgr != nil {
+				targetPath := a.rootPath
+				if targetPath == "" {
+					targetPath = a.activeRepo
+				}
+				a.cfgMgr.TogglePinBranch(targetPath, bName)
+			}
+			go func() {
+				a.loadData()
+				if a.window != nil {
+					a.window.Invalidate()
+				}
+			}()
+			break
+		}
+	}
+
 	// Commit filters
 	if a.btnFilterAll.Clicked(gtx) {
 		a.commitFilter = "all"
@@ -548,6 +655,38 @@ func (a *App) handleEvents(gtx layout.Context) {
 			a.selectedHash = hash
 			go a.loadCommitDetail(hash)
 			break
+		}
+	}
+
+	// Commit Pin clicks
+	for i := range a.commitPinBtns {
+		if i < len(a.commits) && a.commitPinBtns[i].Clicked(gtx) {
+			c := a.commits[i]
+			if c.Hash != "UNCOMMITTED" && a.cfgMgr != nil {
+				targetPath := a.rootPath
+				if targetPath == "" {
+					targetPath = a.activeRepo
+				}
+				a.cfgMgr.TogglePinCommit(targetPath, c.Hash)
+				a.reloadCommitsLocked()
+				if a.selectedDetail != nil && a.selectedDetail.Hash == c.Hash {
+					a.selectedDetail.IsPinned = !a.selectedDetail.IsPinned
+				}
+			}
+			break
+		}
+	}
+
+	// Pin Selected button in commit detail header
+	if a.btnPinSelected.Clicked(gtx) && a.selectedDetail != nil && a.selectedDetail.Hash != "UNCOMMITTED" {
+		targetPath := a.rootPath
+		if targetPath == "" {
+			targetPath = a.activeRepo
+		}
+		if a.cfgMgr != nil {
+			a.cfgMgr.TogglePinCommit(targetPath, a.selectedDetail.Hash)
+			a.selectedDetail.IsPinned = !a.selectedDetail.IsPinned
+			a.reloadCommitsLocked()
 		}
 	}
 
@@ -876,51 +1015,81 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 							click = new(widget.Clickable)
 						}
 
-						return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							bg := pal.HeaderBg
-							if isActive {
-								bg = pal.Selected
-							} else if click.Hovered() {
-								bg = pal.Hover
-							}
+						var pinBtn *widget.Clickable
+						if origIdx < len(a.branchPinBtns) {
+							pinBtn = &a.branchPinBtns[origIdx]
+						} else {
+							pinBtn = new(widget.Clickable)
+						}
 
-							return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
-								return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-										// Row 1: Branch name with active indicator
-										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-											prefix := "  "
-											if b.IsCurrent {
-												prefix = "● "
-											}
-											lbl := material.Label(a.theme, unit.Sp(11), prefix+b.Name)
-											if isActive {
-												lbl.Font.Weight = font.Bold
-												lbl.Color = pal.Accent
-											} else {
-												lbl.Font.Weight = font.Medium
-												lbl.Color = pal.Text
-											}
-											return lbl.Layout(gtx)
-										}),
-										// Row 2: Author and Last Update Time!
-										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-											if b.LastAuthor == "" && b.LastUpdate == "" {
-												return layout.Dimensions{}
-											}
-											sub := b.LastAuthor
-											if b.LastUpdate != "" {
-												if sub != "" {
-													sub += " • "
-												}
-												sub += b.LastUpdate
-											}
-											lbl := material.Label(a.theme, unit.Sp(9.5), "    "+sub)
-											lbl.Color = pal.TextMuted
-											return lbl.Layout(gtx)
-										}),
-									)
-								})
+						bg := pal.HeaderBg
+						if isActive {
+							bg = pal.Selected
+						} else if click.Hovered() || pinBtn.Hovered() {
+							bg = pal.Hover
+						}
+
+						return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+									// Branch info (clickable to switch branch)
+									layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+										return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+											return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+												// Row 1: Branch name with active indicator & pin indicator
+												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+													prefix := "  "
+													if b.IsPinned {
+														prefix = "📌 "
+													} else if b.IsCurrent {
+														prefix = "● "
+													}
+													lbl := material.Label(a.theme, unit.Sp(11), prefix+b.Name)
+													if isActive {
+														lbl.Font.Weight = font.Bold
+														lbl.Color = pal.Accent
+													} else {
+														lbl.Font.Weight = font.Medium
+														lbl.Color = pal.Text
+													}
+													return lbl.Layout(gtx)
+												}),
+												// Row 2: Author and Last Update Time!
+												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+													if b.LastAuthor == "" && b.LastUpdate == "" {
+														return layout.Dimensions{}
+													}
+													sub := b.LastAuthor
+													if b.LastUpdate != "" {
+														if sub != "" {
+															sub += " • "
+														}
+														sub += b.LastUpdate
+													}
+													lbl := material.Label(a.theme, unit.Sp(9.5), "    "+sub)
+													lbl.Color = pal.TextMuted
+													return lbl.Layout(gtx)
+												}),
+											)
+										})
+									}),
+									// Pin button
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										pinLabel := "pin"
+										pinCol := pal.TextMuted
+										if b.IsPinned {
+											pinLabel = "unpin"
+											pinCol = pal.Accent
+										}
+										return pinBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+											return layout.Inset{Left: unit.Dp(4), Right: unit.Dp(2), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+												lbl := material.Label(a.theme, unit.Sp(9), pinLabel)
+												lbl.Color = pinCol
+												return lbl.Layout(gtx)
+											})
+										})
+									}),
+								)
 							})
 						})
 					})
@@ -1079,97 +1248,143 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 					click = new(widget.Clickable)
 				}
 
-				return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					bg := pal.Bg
-					if isSelected {
-						bg = pal.Selected
-					} else if click.Hovered() {
-						bg = pal.Hover
+				var pinBtn *widget.Clickable
+				for origIdx, origC := range commits {
+					if origC.Hash == c.Hash && origIdx < len(a.commitPinBtns) {
+						pinBtn = &a.commitPinBtns[origIdx]
+						break
 					}
+				}
+				if pinBtn == nil {
+					pinBtn = new(widget.Clickable)
+				}
 
-					return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
-						return layout.Inset{
-							Top:    unit.Dp(7),
-							Bottom: unit.Dp(7),
-							Left:   unit.Dp(10),
-							Right:  unit.Dp(10),
-						}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-								// Author + Time
-								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				bg := pal.Bg
+				if isSelected {
+					bg = pal.Selected
+				} else if click.Hovered() || pinBtn.Hovered() {
+					bg = pal.Hover
+				}
+
+				return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{
+						Top:    unit.Dp(7),
+						Bottom: unit.Dp(7),
+						Left:   unit.Dp(10),
+						Right:  unit.Dp(10),
+					}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+								return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+										// Author + Time
 										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-											lbl := material.Label(a.theme, unit.Sp(11), c.AuthorName)
-											lbl.Font.Weight = font.SemiBold
+											return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+													prefix := ""
+													if c.IsPinned {
+														prefix = "📌 "
+													}
+													lbl := material.Label(a.theme, unit.Sp(11), prefix+c.AuthorName)
+													lbl.Font.Weight = font.SemiBold
+													if isUncommitted {
+														lbl.Color = pal.AddText
+													} else {
+														lbl.Color = pal.Text
+													}
+													return lbl.Layout(gtx)
+												}),
+												layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+													timeText := formatRelativeTime(c.Date)
+													if isUncommitted {
+														timeText = "Now"
+													}
+													lbl := material.Label(a.theme, unit.Sp(10.5), timeText)
+													lbl.Color = pal.TextMuted
+													return lbl.Layout(gtx)
+												}),
+											)
+										}),
+										layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
+										// Message
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											msg := c.Message
+											if len(msg) > 75 {
+												msg = msg[:75] + "..."
+											}
+											lbl := material.Label(a.theme, unit.Sp(11.5), msg)
+											lbl.Color = pal.Text
 											if isUncommitted {
-												lbl.Color = pal.AddText
-											} else {
-												lbl.Color = pal.Text
+												lbl.Font.Weight = font.Bold
 											}
 											return lbl.Layout(gtx)
 										}),
-										layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+										layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+										// Badges + Stats
 										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-											timeText := formatRelativeTime(c.Date)
-											if isUncommitted {
-												timeText = "Now"
-											}
-											lbl := material.Label(a.theme, unit.Sp(10.5), timeText)
-											lbl.Color = pal.TextMuted
-											return lbl.Layout(gtx)
+											return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+													if isUncommitted {
+														return a.drawTag(gtx, "UNCOMMITTED", pal.AddBg, pal.AddText)
+													}
+													if c.IsPinned {
+														return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+															return a.drawTag(gtx, "PINNED", pal.Selected, pal.Accent)
+														})
+													}
+													return layout.Dimensions{}
+												}),
+												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+													if c.IsMerge {
+														return a.drawTag(gtx, "MERGE", pal.Accent, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
+													}
+													if c.IsAI {
+														tag := "AI"
+														if c.AITag != "" {
+															tag = c.AITag
+														}
+														return a.drawTag(gtx, tag, pal.BadgeBg, pal.BadgeText)
+													}
+													return layout.Dimensions{}
+												}),
+												layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+													lbl := material.Label(a.theme, unit.Sp(10.5), fmt.Sprintf("+%d -%d", c.Additions, c.Deletions))
+													lbl.Color = pal.TextMuted
+													return lbl.Layout(gtx)
+												}),
+												layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+													lbl := material.Label(a.theme, unit.Sp(10.5), c.ShortHash)
+													lbl.Color = pal.TextMuted
+													return lbl.Layout(gtx)
+												}),
+											)
 										}),
 									)
-								}),
-								layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
-								// Message
-								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									msg := c.Message
-									if len(msg) > 75 {
-										msg = msg[:75] + "..."
-									}
-									lbl := material.Label(a.theme, unit.Sp(11.5), msg)
-									lbl.Color = pal.Text
-									if isUncommitted {
-										lbl.Font.Weight = font.Bold
-									}
-									return lbl.Layout(gtx)
-								}),
-								layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
-								// Badges + Stats
-								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-											if isUncommitted {
-												return a.drawTag(gtx, "UNCOMMITTED", pal.AddBg, pal.AddText)
-											}
-											if c.IsMerge {
-												return a.drawTag(gtx, "MERGE", pal.Accent, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
-											}
-											if c.IsAI {
-												tag := "AI"
-												if c.AITag != "" {
-													tag = c.AITag
-												}
-												return a.drawTag(gtx, tag, pal.BadgeBg, pal.BadgeText)
-											}
-											return layout.Dimensions{}
-										}),
-										layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
-										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-											lbl := material.Label(a.theme, unit.Sp(10.5), fmt.Sprintf("+%d -%d", c.Additions, c.Deletions))
-											lbl.Color = pal.TextMuted
-											return lbl.Layout(gtx)
-										}),
-										layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-											lbl := material.Label(a.theme, unit.Sp(10.5), c.ShortHash)
-											lbl.Color = pal.TextMuted
-											return lbl.Layout(gtx)
-										}),
-									)
-								}),
-							)
-						})
+								})
+							}),
+							// Pin button
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								if isUncommitted {
+									return layout.Dimensions{}
+								}
+								pinLabel := "pin"
+								pinCol := pal.TextMuted
+								if c.IsPinned {
+									pinLabel = "unpin"
+									pinCol = pal.Accent
+								}
+								return pinBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(2), Top: unit.Dp(4), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+										lbl := material.Label(a.theme, unit.Sp(9.5), pinLabel)
+										lbl.Color = pinCol
+										return lbl.Layout(gtx)
+									})
+								})
+							}),
+						)
 					})
 				})
 			})
@@ -1343,13 +1558,18 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 			return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
 				return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-						// Subject & Tag
+						// Subject & Tag & Pin button
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 									if isUncommitted {
 										return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 											return a.drawTag(gtx, "UNCOMMITTED CHANGES", pal.AddBg, pal.AddText)
+										})
+									}
+									if detail.IsPinned {
+										return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+											return a.drawTag(gtx, "PINNED", pal.Selected, pal.Accent)
 										})
 									}
 									if detail.IsMerge {
@@ -1359,11 +1579,21 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 									}
 									return layout.Dimensions{}
 								}),
-								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 									lbl := material.Label(a.theme, unit.Sp(13.5), detail.Message)
 									lbl.Font.Weight = font.Bold
 									lbl.Color = pal.Text
 									return lbl.Layout(gtx)
+								}),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									if isUncommitted {
+										return layout.Dimensions{}
+									}
+									pinText := "Pin"
+									if detail.IsPinned {
+										pinText = "Pinned"
+									}
+									return a.drawPillButton(gtx, &a.btnPinSelected, pinText, detail.IsPinned, pal)
 								}),
 							)
 						}),

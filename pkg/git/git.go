@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"scodeviewer/pkg/models"
@@ -23,9 +24,17 @@ func NewService() *Service {
 	return &Service{}
 }
 
+func hideWindowAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
+}
+
 func (s *Service) runGit(ctx context.Context, repoPath string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repoPath
+	cmd.SysProcAttr = hideWindowAttr()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -44,6 +53,7 @@ func (s *Service) IsGitRepo(path string) bool {
 
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--is-inside-work-tree")
 	cmd.Dir = path
+	cmd.SysProcAttr = hideWindowAttr()
 	err := cmd.Run()
 	return err == nil
 }

@@ -3762,6 +3762,7 @@ func (a *App) layoutCommitActionBox(gtx layout.Context, pal Palette) layout.Dime
 }
 
 func (a *App) layoutProfileModalOverlay(gtx layout.Context, pal Palette) layout.Dimensions {
+	gtx.Constraints.Min = gtx.Constraints.Max
 	return layout.Stack{}.Layout(gtx,
 		layout.Expanded(func(gtx layout.Context) layout.Dimensions {
 			dims := layout.Dimensions{Size: gtx.Constraints.Max}
@@ -3772,6 +3773,7 @@ func (a *App) layoutProfileModalOverlay(gtx layout.Context, pal Palette) layout.
 			})
 		}),
 		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min = gtx.Constraints.Max
 			return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return a.btnCardProfile.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					return a.layoutProfileModalCard(gtx, pal)
@@ -3789,8 +3791,8 @@ func (a *App) layoutProfileModalCard(gtx layout.Context, pal Palette) layout.Dim
 	statusIsErr := a.gitOpIsError
 	a.mu.Unlock()
 
-	gtx.Constraints.Min.X = gtx.Dp(unit.Dp(560))
-	gtx.Constraints.Max.X = gtx.Dp(unit.Dp(560))
+	gtx.Constraints.Min.X = gtx.Dp(unit.Dp(520))
+	gtx.Constraints.Max.X = gtx.Dp(unit.Dp(520))
 
 	return drawWithBorder(gtx, pal.Surface, unit.Dp(10), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
 		return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
@@ -3805,7 +3807,7 @@ func (a *App) layoutProfileModalCard(gtx layout.Context, pal Palette) layout.Dim
 						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									lbl := material.Label(a.theme, unit.Sp(14), "Git Personal Office / Личный кабинет")
+									lbl := material.Label(a.theme, unit.Sp(14), "Git Commit Author / Автор коммитов")
 									lbl.Font.Weight = font.Bold
 									lbl.Color = pal.Text
 									return lbl.Layout(gtx)
@@ -3828,9 +3830,9 @@ func (a *App) layoutProfileModalCard(gtx layout.Context, pal Palette) layout.Dim
 				}),
 				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
 
-				// Section 1: Commit Author Identity
+				// Section: Commit Author Identity
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return a.drawSectionHeader(gtx, "COMMIT AUTHOR IDENTITY", pal)
+					return a.drawSectionHeader(gtx, "AUTHOR IDENTITY (user.name & user.email)", pal)
 				}),
 				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -3878,7 +3880,7 @@ func (a *App) layoutProfileModalCard(gtx layout.Context, pal Palette) layout.Dim
 						}),
 					)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
 				// Save Buttons Row
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
@@ -3888,40 +3890,6 @@ func (a *App) layoutProfileModalCard(gtx layout.Context, pal Palette) layout.Dim
 						layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return a.drawIconPillButton(gtx, &a.btnSaveProfileGlobal, a.icons.Save, "Save Globally (~/.gitconfig)", false, pal)
-						}),
-					)
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return drawDivider(gtx, pal.Border)
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
-
-				// Section 2: Git Remote Operations & Sync
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return a.drawSectionHeader(gtx, "GIT OPERATIONS & SYNC", pal)
-				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return a.drawIconPillButton(gtx, &a.btnProfilePush, a.icons.Push, "Push", false, pal)
-						}),
-						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return a.drawIconPillButton(gtx, &a.btnProfilePull, a.icons.Pull, "Pull", false, pal)
-						}),
-						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return a.drawIconPillButton(gtx, &a.btnProfileFetch, a.icons.Sync, "Fetch All", false, pal)
-						}),
-						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return a.drawIconPillButton(gtx, &a.btnProfileStash, a.icons.Folder, "Stash", false, pal)
-						}),
-						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return a.drawIconPillButton(gtx, &a.btnProfileStashPop, a.icons.Folder, "Pop Stash", false, pal)
 						}),
 					)
 				}),

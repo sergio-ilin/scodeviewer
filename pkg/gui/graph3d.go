@@ -42,7 +42,6 @@ type Graph3DView struct {
 
 	// Selected & Hovered state
 	selectedHash string
-	hoveredHash  string
 
 	// Camera Preset Buttons
 	btnIso        widget.Clickable
@@ -53,7 +52,6 @@ type Graph3DView struct {
 	btnZoomIn     widget.Clickable
 	btnZoomOut    widget.Clickable
 	btnCopyHash   widget.Clickable
-	btnPinNode    widget.Clickable
 
 	// Screen projected positions for hit testing
 	projectedNodes []projectedNode
@@ -63,6 +61,7 @@ type projectedNode struct {
 	node      git.Graph3DNode
 	screenPos f32.Point
 	depth     float64
+	visible   bool
 	col       color.NRGBA
 	isMerge   bool
 	radius    float32
@@ -79,8 +78,8 @@ type projectedEdge struct {
 func NewGraph3DView(app *App) *Graph3DView {
 	return &Graph3DView{
 		app:   app,
-		yaw:   0.55,
-		pitch: 0.35,
+		yaw:   0.38,
+		pitch: 0.24,
 		zoom:  1.0,
 		panX:  0,
 		panY:  -30,
@@ -95,6 +94,9 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 			return lbl.Layout(gtx)
 		})
 	}
+
+	// Clip everything strictly to 3D canvas so nothing ever draws over sidebar or window bounds!
+	defer clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Push(gtx.Ops).Pop()
 
 	// 1. Process Pointer Events on the 3D Canvas
 	g.handlePointer(gtx)
@@ -114,81 +116,121 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 			// Canvas background
 			paint.FillShape(gtx.Ops, pal.Bg, clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Op())
 
-			// Register pointer hit area
+			// Register pointer hit area (entire canvas area)
 			area := clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Push(gtx.Ops)
 			event.Op(gtx.Ops, g)
-			area.Pop()
 
 			// Render the 3D Scene
 			g.render3DScene(gtx, data, pal)
+			area.Pop()
 			return layout.Dimensions{Size: gtx.Constraints.Max}
 		}),
 
 		// Top Controls Toolbar (Presets, Camera, Zoom)
 		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(12), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Label(g.app.theme, unit.Sp(12), "3D TOPOLOGY GRAPH")
-						lbl.Font.Weight = font.Bold
-						lbl.Color = pal.Accent
-						return lbl.Layout(gtx)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return g.app.drawPillButton(gtx, &g.btnIso, "Isometric (3D)", false, pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return g.app.drawPillButton(gtx, &g.btnTop, "Top (2D DAG)", false, pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return g.app.drawPillButton(gtx, &g.btnFront, "Front (Timeline)", false, pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return g.app.drawPillButton(gtx, &g.btnReset, "Reset View", false, pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						rotText := "Auto-Rotate"
-						if g.autoRotate {
-							rotText = "Stop Rotate"
-						}
-						return g.app.drawPillButton(gtx, &g.btnAutoRotate, rotText, g.autoRotate, pal)
-					}),
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
-					// Zoom buttons
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return g.app.drawPillButton(gtx, &g.btnZoomIn, "+", false, pal)
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return g.app.drawPillButton(gtx, &g.btnZoomOut, "-", false, pal)
-					}),
-				)
+			return layout.Inset{Top: unit.Dp(14), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return drawWithBorder(gtx, pal.HeaderBg, unit.Dp(8), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										return g.app.icons.Layout(gtx, g.app.icons.Merge, pal.Accent, unit.Dp(14))
+									}),
+									layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										lbl := material.Label(g.app.theme, unit.Sp(12), "3D TOPOLOGY")
+										lbl.Font.Weight = font.Bold
+										lbl.Color = pal.Text
+										return lbl.Layout(gtx)
+									}),
+								)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return drawVerticalDivider(gtx, pal.Border)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(14)}.Layout),
+							// Presets
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return g.app.drawPillButton(gtx, &g.btnIso, "Isometric (3D)", false, pal)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return g.app.drawPillButton(gtx, &g.btnTop, "Top (2D DAG)", false, pal)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return g.app.drawPillButton(gtx, &g.btnFront, "Front (Timeline)", false, pal)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return g.app.drawPillButton(gtx, &g.btnReset, "Reset View", false, pal)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								rotText := "Auto-Rotate"
+								if g.autoRotate {
+									rotText = "Stop Rotate"
+								}
+								return g.app.drawPillButton(gtx, &g.btnAutoRotate, rotText, g.autoRotate, pal)
+							}),
+							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+							// Zoom level indicator and buttons
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								zoomPct := fmt.Sprintf("%d%%", int(g.zoom*100))
+								lbl := material.Label(g.app.theme, unit.Sp(11), zoomPct)
+								lbl.Color = pal.TextMuted
+								lbl.Font.Weight = font.SemiBold
+								return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, lbl.Layout)
+							}),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return g.app.drawPillButton(gtx, &g.btnZoomIn, "+", false, pal)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return g.app.drawPillButton(gtx, &g.btnZoomOut, "-", false, pal)
+							}),
+						)
+					})
+				})
+			})
+		}),
+
+		// Instructions badge at bottom left
+		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+			if g.selectedHash != "" {
+				return layout.Dimensions{}
+			}
+			return layout.SW.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Bottom: unit.Dp(16), Left: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return drawWithBorder(gtx, pal.HeaderBg, unit.Dp(6), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Label(g.app.theme, unit.Sp(10.5), "Controls: ")
+									lbl.Font.Weight = font.Bold
+									lbl.Color = pal.Accent
+									return lbl.Layout(gtx)
+								}),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Label(g.app.theme, unit.Sp(10.5), "Left drag: Rotate  •  Right drag / Shift: Pan  •  Wheel: Zoom in/out  •  Click node to inspect")
+									lbl.Color = pal.Text
+									return lbl.Layout(gtx)
+								}),
+							)
+						})
+					})
+				})
 			})
 		}),
 
 		// Floating 3D Commit Inspector Card (when node selected)
 		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
 			if g.selectedHash == "" {
-				// Show quick instructions
-				return layout.SW.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return layout.Inset{Bottom: unit.Dp(16), Left: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return drawWithRoundedBg(gtx, pal.Surface, unit.Dp(6), func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Label(g.app.theme, unit.Sp(10.5), "Left drag: Rotate 3D  •  Right drag / Shift: Pan  •  Wheel: Zoom  •  Click node to inspect")
-								lbl.Color = pal.TextMuted
-								return lbl.Layout(gtx)
-							})
-						})
-					})
-				})
+				return layout.Dimensions{}
 			}
 
-			// Find selected node
 			var selNode *git.Graph3DNode
 			for i := range data.Nodes {
 				if data.Nodes[i].Hash == g.selectedHash {
@@ -213,8 +255,8 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 func (g *Graph3DView) handlePointer(gtx layout.Context) {
 	// Handle button clicks
 	if g.btnIso.Clicked(gtx) {
-		g.yaw = 0.55
-		g.pitch = 0.35
+		g.yaw = 0.42
+		g.pitch = 0.28
 		g.zoom = 1.0
 		g.panX = 0
 		g.panY = -30
@@ -227,15 +269,15 @@ func (g *Graph3DView) handlePointer(gtx layout.Context) {
 		g.panY = -30
 	}
 	if g.btnFront.Clicked(gtx) {
-		g.yaw = math.Pi / 2
+		g.yaw = 1.57
 		g.pitch = 0
 		g.zoom = 1.0
 		g.panX = 0
 		g.panY = -30
 	}
 	if g.btnReset.Clicked(gtx) {
-		g.yaw = 0.55
-		g.pitch = 0.35
+		g.yaw = 0.38
+		g.pitch = 0.24
 		g.zoom = 1.0
 		g.panX = 0
 		g.panY = -30
@@ -245,16 +287,18 @@ func (g *Graph3DView) handlePointer(gtx layout.Context) {
 		g.autoRotate = !g.autoRotate
 	}
 	if g.btnZoomIn.Clicked(gtx) {
-		g.zoom = math.Min(4.0, g.zoom*1.2)
+		g.zoom = math.Min(5.0, g.zoom*1.2)
 	}
 	if g.btnZoomOut.Clicked(gtx) {
-		g.zoom = math.Max(0.25, g.zoom*0.8)
+		g.zoom = math.Max(0.20, g.zoom*0.8)
 	}
 
 	for {
 		ev, ok := gtx.Event(pointer.Filter{
-			Target: g,
-			Kinds:  pointer.Press | pointer.Drag | pointer.Release | pointer.Scroll,
+			Target:  g,
+			Kinds:   pointer.Press | pointer.Drag | pointer.Release | pointer.Scroll,
+			ScrollY: pointer.ScrollRange{Min: -1000000, Max: 1000000},
+			ScrollX: pointer.ScrollRange{Min: -1000000, Max: 1000000},
 		})
 		if !ok {
 			break
@@ -274,8 +318,8 @@ func (g *Graph3DView) handlePointer(gtx layout.Context) {
 					g.panX += deltaX
 					g.panY += deltaY
 				} else {
-					g.yaw += deltaX * 0.007
-					g.pitch += deltaY * 0.007
+					g.yaw += deltaX * 0.006
+					g.pitch += deltaY * 0.006
 					if g.pitch < -1.4 {
 						g.pitch = -1.4
 					}
@@ -283,35 +327,46 @@ func (g *Graph3DView) handlePointer(gtx layout.Context) {
 						g.pitch = 1.4
 					}
 				}
+				gtx.Execute(op.InvalidateCmd{})
 			case pointer.Release:
 				g.isDragging = false
 				dx := e.Position.X - g.dragStart.X
 				dy := e.Position.Y - g.dragStart.Y
-				if dx*dx+dy*dy < 25 {
+				if dx*dx+dy*dy < 36 {
 					// Hit test nodes
 					g.hitTestNode(e.Position)
 				}
+				gtx.Execute(op.InvalidateCmd{})
 			case pointer.Scroll:
-				if e.Scroll.Y > 0 {
-					g.zoom = math.Max(0.25, g.zoom*0.9)
-				} else if e.Scroll.Y < 0 {
-					g.zoom = math.Min(4.0, g.zoom*1.1)
+				if e.Modifiers.Contain(key.ModShift) {
+					// Shift+Wheel: horizontal pan
+					g.panX -= float64(e.Scroll.Y) * 0.5
+				} else {
+					// Mouse wheel zoom
+					if e.Scroll.Y > 0 {
+						g.zoom = math.Max(0.20, g.zoom*0.88)
+					} else if e.Scroll.Y < 0 {
+						g.zoom = math.Min(5.0, g.zoom*1.14)
+					}
 				}
+				gtx.Execute(op.InvalidateCmd{})
 			}
 		}
 	}
 }
 
 func (g *Graph3DView) hitTestNode(pos f32.Point) {
-	// Find clicked node with highest depth (front-most)
 	var bestHash string
 	bestDist := float32(1000.0)
 
 	for _, pn := range g.projectedNodes {
+		if !pn.visible {
+			continue
+		}
 		dx := pos.X - pn.screenPos.X
 		dy := pos.Y - pn.screenPos.Y
 		dist := float32(math.Sqrt(float64(dx*dx + dy*dy)))
-		if dist <= pn.radius+8 && dist < bestDist {
+		if dist <= pn.radius+10 && dist < bestDist {
 			bestDist = dist
 			bestHash = pn.node.Hash
 		}
@@ -327,6 +382,10 @@ func (g *Graph3DView) hitTestNode(pos f32.Point) {
 }
 
 func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, pal Palette) {
+	if data == nil || len(data.Nodes) == 0 {
+		return
+	}
+
 	screenW := float64(gtx.Constraints.Max.X)
 	screenH := float64(gtx.Constraints.Max.Y)
 
@@ -337,8 +396,9 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 			maxLane = n.Lane
 		}
 	}
-	cx := float64(maxLane) * 55.0
-	cy := float64(len(data.Nodes)) * 25.0
+	cx := float64(maxLane) * 50.0
+	// Centered on recent commits (HEAD is at Order 0)
+	cy := 180.0
 	cz := 0.0
 
 	laneColors := []color.NRGBA{
@@ -357,35 +417,51 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 		return laneColors[lane%len(laneColors)]
 	}
 
+	// 0. Render subtle 3D floor runway lines for lanes
+	gridCol := color.NRGBA{R: pal.Border.R, G: pal.Border.G, B: pal.Border.B, A: 50}
+	for l := 0; l <= maxLane+1; l++ {
+		lx := float64(l) * 100.0
+		sx1, sy1, _, v1 := project3D(lx, -60.0, -10.0, cx, cy, cz, g.yaw, g.pitch, g.zoom, screenW, screenH, g.panX, g.panY)
+		sx2, sy2, _, v2 := project3D(lx, math.Min(float64(len(data.Nodes))*60.0, 2400.0), -10.0, cx, cy, cz, g.yaw, g.pitch, g.zoom, screenW, screenH, g.panX, g.panY)
+		if v1 && v2 {
+			var gp clip.Path
+			gp.Begin(gtx.Ops)
+			gp.MoveTo(f32.Pt(float32(sx1), float32(sy1)))
+			gp.LineTo(f32.Pt(float32(sx2), float32(sy2)))
+			paint.FillShape(gtx.Ops, gridCol, clip.Stroke{Path: gp.End(), Width: 1.0}.Op())
+		}
+	}
+
 	// 1. Project all nodes into screen coordinates
 	g.projectedNodes = make([]projectedNode, len(data.Nodes))
 	for i, n := range data.Nodes {
-		worldX := float64(n.Lane) * 110.0
-		worldY := float64(n.Order) * 52.0
+		worldX := float64(n.Lane) * 100.0
+		worldY := float64(n.Order) * 60.0
 		worldZ := 0.0
 		if n.IsMerge {
-			worldZ = 45.0 // Elevated in 3D
+			worldZ = 35.0 // Elevated in 3D
 		}
 
-		sx, sy, depth := project3D(worldX, worldY, worldZ, cx, cy, cz, g.yaw, g.pitch, g.zoom, screenW, screenH, g.panX, g.panY)
+		sx, sy, depth, visible := project3D(worldX, worldY, worldZ, cx, cy, cz, g.yaw, g.pitch, g.zoom, screenW, screenH, g.panX, g.panY)
 
 		col := getLaneColor(n.Lane)
 		if n.IsMerge {
 			col = color.NRGBA{R: 220, G: 100, B: 255, A: 255} // Purple/Magenta for Merges
 		}
 
-		rad := float32(10.0 * g.zoom)
-		if rad < 6 {
-			rad = 6
+		rad := float32(11.0 * g.zoom)
+		if rad < 5 {
+			rad = 5
 		}
-		if rad > 22 {
-			rad = 22
+		if rad > 24 {
+			rad = 24
 		}
 
 		g.projectedNodes[i] = projectedNode{
 			node:      n,
 			screenPos: f32.Pt(float32(sx), float32(sy)),
 			depth:     depth,
+			visible:   visible,
 			col:       col,
 			isMerge:   n.IsMerge,
 			radius:    rad,
@@ -402,6 +478,9 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 		}
 		pFrom := g.projectedNodes[fromIdx]
 		pTo := g.projectedNodes[toIdx]
+		if !pFrom.visible || !pTo.visible {
+			continue
+		}
 
 		edgeCol := pFrom.col
 		edgeCol.A = 180
@@ -418,7 +497,7 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 		})
 	}
 
-	// 3. Render Edges (Depth Sorted)
+	// 3. Render Edges (Depth Sorted: back to front)
 	sort.Slice(projEdges, func(i, j int) bool {
 		return projEdges[i].depth < projEdges[j].depth
 	})
@@ -452,9 +531,11 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 		idx   int
 		depth float64
 	}
-	sortedNodes := make([]sortableNode, len(g.projectedNodes))
+	var sortedNodes []sortableNode
 	for i, pn := range g.projectedNodes {
-		sortedNodes[i] = sortableNode{idx: i, depth: pn.depth}
+		if pn.visible {
+			sortedNodes = append(sortedNodes, sortableNode{idx: i, depth: pn.depth})
+		}
 	}
 	sort.Slice(sortedNodes, func(i, j int) bool {
 		return sortedNodes[i].depth < sortedNodes[j].depth
@@ -468,7 +549,7 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 		g.draw3DBlock(gtx, pn.screenPos, pn.radius, pn.col, pn.isMerge, isSelected, pal)
 
 		// Label (ShortHash + Branch tag)
-		if g.zoom >= 0.65 {
+		if g.zoom >= 0.60 {
 			labelX := pn.screenPos.X + pn.radius + 8
 			labelY := pn.screenPos.Y - 6
 
@@ -478,24 +559,24 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 				lbl.Font.Weight = font.Bold
 				lbl.Color = pal.Accent
 			} else {
-				lbl.Color = pal.TextMuted
+				lbl.Color = pal.Text
 			}
 			dims := lbl.Layout(gtx)
 			call := macro.Stop()
 
-			op.Offset(image.Pt(int(labelX), int(labelY))).Add(gtx.Ops)
+			tStack := op.Offset(image.Pt(int(labelX), int(labelY))).Push(gtx.Ops)
 			call.Add(gtx.Ops)
-			op.Offset(image.Pt(-int(labelX), -int(labelY))).Add(gtx.Ops)
+			tStack.Pop()
 
 			// If has branch ref
 			if len(pn.node.Refs) > 0 {
 				refText := pn.node.Refs[0]
 				macro2 := op.Record(gtx.Ops)
-				tagCol := pal.BadgeBg
+				tagCol := pal.HeaderBg
 				if isSelected {
 					tagCol = pal.Selected
 				}
-				tagDims := drawWithRoundedBg(gtx, tagCol, unit.Dp(3), func(gtx layout.Context) layout.Dimensions {
+				drawWithRoundedBg(gtx, tagCol, unit.Dp(3), func(gtx layout.Context) layout.Dimensions {
 					return layout.Inset{Top: unit.Dp(1), Bottom: unit.Dp(1), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						tLbl := material.Label(g.app.theme, unit.Sp(8.5), refText)
 						tLbl.Color = pn.col
@@ -506,10 +587,9 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 				call2 := macro2.Stop()
 
 				refX := labelX + float32(dims.Size.X) + 6
-				op.Offset(image.Pt(int(refX), int(labelY-2))).Add(gtx.Ops)
+				tStack2 := op.Offset(image.Pt(int(refX), int(labelY-2))).Push(gtx.Ops)
 				call2.Add(gtx.Ops)
-				op.Offset(image.Pt(-int(refX), -int(labelY-2))).Add(gtx.Ops)
-				_ = tagDims
+				tStack2.Pop()
 			}
 		}
 	}
@@ -526,7 +606,7 @@ func (g *Graph3DView) draw3DBlock(gtx layout.Context, center f32.Point, rad floa
 		p.Arc(f32.Pt(center.X-haloR, center.Y), f32.Pt(center.X+haloR, center.Y), math.Pi)
 		p.Arc(f32.Pt(center.X+haloR, center.Y), f32.Pt(center.X-haloR, center.Y), math.Pi)
 		p.Close()
-		paint.FillShape(gtx.Ops, color.NRGBA{R: pal.Accent.R, G: pal.Accent.G, B: pal.Accent.B, A: 140}, clip.Stroke{Path: p.End(), Width: 3}.Op())
+		paint.FillShape(gtx.Ops, color.NRGBA{R: pal.Accent.R, G: pal.Accent.G, B: pal.Accent.B, A: 160}, clip.Stroke{Path: p.End(), Width: 3.5}.Op())
 	}
 
 	w := rad * 1.5
@@ -539,13 +619,11 @@ func (g *Graph3DView) draw3DBlock(gtx layout.Context, center f32.Point, rad floa
 	sideCol := shadeColor(baseCol, 0.7) // Shadow side
 
 	// Vertices for 3D block
-	// Top Face: p0(top), p1(right), p2(bottom), p3(left)
 	p0 := f32.Pt(center.X, center.Y-h-d)
 	p1 := f32.Pt(center.X+w, center.Y-d)
 	p2 := f32.Pt(center.X, center.Y+h-d)
 	p3 := f32.Pt(center.X-w, center.Y-d)
 
-	// Front Bottom: p4(bottom front), p5(left front)
 	p4 := f32.Pt(center.X, center.Y+h)
 	p5 := f32.Pt(center.X-w, center.Y)
 	p6 := f32.Pt(center.X+w, center.Y)
@@ -616,7 +694,7 @@ func shadeColor(c color.NRGBA, factor float64) color.NRGBA {
 	return color.NRGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: c.A}
 }
 
-func project3D(x, y, z, cx, cy, cz, yaw, pitch, zoom, screenW, screenH, panX, panY float64) (screenX, screenY, depth float64) {
+func project3D(x, y, z, cx, cy, cz, yaw, pitch, zoom, screenW, screenH, panX, panY float64) (screenX, screenY, depth float64, visible bool) {
 	dx := x - cx
 	dy := y - cy
 	dz := z - cz
@@ -629,16 +707,17 @@ func project3D(x, y, z, cx, cy, cz, yaw, pitch, zoom, screenW, screenH, panX, pa
 	y2 := dy*cosP - z1*sinP
 	z2 := dy*sinP + z1*cosP
 
-	fov := 650.0
+	fov := 700.0
 	dist := fov + z2
-	if dist < 60.0 {
-		dist = 60.0
+	if dist <= 80.0 {
+		return 0, 0, -99999, false
 	}
 	scale := (fov / dist) * zoom
 
 	screenX = (screenW / 2) + x1*scale + panX
 	screenY = (screenH / 2) + y2*scale + panY
 	depth = z2
+	visible = true
 	return
 }
 
@@ -651,7 +730,7 @@ func (g *Graph3DView) renderInspectorCard(gtx layout.Context, n *git.Graph3DNode
 		g.app.copiedHash = n.ShortHash
 	}
 
-	return drawWithRoundedBg(gtx, pal.Surface, unit.Dp(8), func(gtx layout.Context) layout.Dimensions {
+	return drawWithBorder(gtx, pal.HeaderBg, unit.Dp(8), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				// Header: Type badge + Hash copy badge

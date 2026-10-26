@@ -3048,6 +3048,25 @@ func drawWithRoundedBgAndLeftBorder(gtx layout.Context, bg color.NRGBA, borderCo
 	return dims
 }
 
+func drawWithBorder(gtx layout.Context, bg color.NRGBA, radius unit.Dp, borderW unit.Dp, borderCol color.NRGBA, w layout.Widget) layout.Dimensions {
+	m := op.Record(gtx.Ops)
+	dims := w(gtx)
+	call := m.Stop()
+
+	r := gtx.Dp(radius)
+	rr := clip.RRect{
+		Rect: image.Rect(0, 0, dims.Size.X, dims.Size.Y),
+		SE:   r, SW: r, NW: r, NE: r,
+	}
+	paint.FillShape(gtx.Ops, bg, rr.Op(gtx.Ops))
+	bw := float32(gtx.Dp(borderW))
+	if bw > 0 {
+		paint.FillShape(gtx.Ops, borderCol, clip.Stroke{Path: rr.Path(gtx.Ops), Width: bw}.Op())
+	}
+	call.Add(gtx.Ops)
+	return dims
+}
+
 func drawDivider(gtx layout.Context, c color.NRGBA) layout.Dimensions {
 	h := gtx.Dp(unit.Dp(1))
 	w := gtx.Constraints.Max.X

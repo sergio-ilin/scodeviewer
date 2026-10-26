@@ -18,6 +18,7 @@ type Project struct {
 type Config struct {
 	Projects        []Project `json:"projects"`
 	ActivePath      string    `json:"activePath"`
+	ActiveSubRepo   string    `json:"activeSubRepo,omitempty"`
 	ThemePreference string    `json:"themePreference"` // "system", "dark", "light"
 }
 

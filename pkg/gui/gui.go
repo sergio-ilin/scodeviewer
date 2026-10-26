@@ -188,8 +188,20 @@ func NewApp(initialPath string) *App {
 	if cfgMgr != nil {
 		cfg := cfgMgr.GetConfig()
 		savedProjects = cfg.Projects
-		if target == "" && cfg.ActivePath != "" && gitSvc.IsGitRepo(cfg.ActivePath) {
-			target = cfg.ActivePath
+		if target == "" {
+			if cfg.ActiveSubRepo != "" && gitSvc.IsGitRepo(cfg.ActiveSubRepo) {
+				target = cfg.ActiveSubRepo
+			} else if cfg.ActivePath != "" && gitSvc.IsGitRepo(cfg.ActivePath) {
+				target = cfg.ActivePath
+			}
+		}
+	}
+
+	root := target
+	if cfgMgr != nil {
+		cfg := cfgMgr.GetConfig()
+		if cfg.ActivePath != "" && gitSvc.IsGitRepo(cfg.ActivePath) {
+			root = cfg.ActivePath
 		}
 	}
 
@@ -197,7 +209,7 @@ func NewApp(initialPath string) *App {
 		theme:         th,
 		gitSvc:        gitSvc,
 		cfgMgr:        cfgMgr,
-		rootPath:      target,
+		rootPath:      root,
 		activeRepo:    target,
 		projects:      savedProjects,
 		activeTab:     "commits",
@@ -219,10 +231,13 @@ func NewApp(initialPath string) *App {
 	}
 	a.graph3dView = NewGraph3DView(a)
 
-	if target != "" {
+	if root != "" {
 		a.repoName = filepath.Base(target)
 		if cfgMgr != nil {
-			cfgMgr.AddProject(target, true)
+			cfgMgr.AddProject(root, true)
+			if target != root {
+				cfgMgr.SetActiveSubRepo(target)
+			}
 			a.projects = cfgMgr.GetConfig().Projects
 		}
 	}
@@ -746,6 +761,9 @@ func (a *App) handleEvents(gtx layout.Context) {
 			a.repoName = a.subRepos[i].Name
 			a.selectedHash = ""
 			a.selectedDetail = nil
+			if a.cfgMgr != nil {
+				a.cfgMgr.SetActiveSubRepo(a.subRepos[i].Path)
+			}
 			go func() {
 				a.loadData()
 				if a.window != nil {

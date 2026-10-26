@@ -18,23 +18,26 @@ func main() {
 	targetPath := *pathFlag
 	gitSvc := git.NewService()
 
-	if targetPath == "" {
-		cwd, err := os.Getwd()
-		if err == nil && gitSvc.IsGitRepo(cwd) {
-			targetPath = cwd
-		}
-	} else {
+	if targetPath != "" {
 		abs, err := filepath.Abs(targetPath)
 		if err == nil && gitSvc.IsGitRepo(abs) {
 			targetPath = abs
 		}
-	}
-
-	if targetPath == "" {
+	} else {
+		// Priority 1: Remembered active project from previous session!
 		if cfgMgr, err := config.NewManager(); err == nil {
 			cfg := cfgMgr.GetConfig()
-			if cfg.ActivePath != "" && gitSvc.IsGitRepo(cfg.ActivePath) {
+			if cfg.ActiveSubRepo != "" && gitSvc.IsGitRepo(cfg.ActiveSubRepo) {
+				targetPath = cfg.ActiveSubRepo
+			} else if cfg.ActivePath != "" && gitSvc.IsGitRepo(cfg.ActivePath) {
 				targetPath = cfg.ActivePath
+			}
+		}
+		// Priority 2: Fallback to current working directory
+		if targetPath == "" {
+			cwd, err := os.Getwd()
+			if err == nil && gitSvc.IsGitRepo(cwd) {
+				targetPath = cwd
 			}
 		}
 	}

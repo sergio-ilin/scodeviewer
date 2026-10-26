@@ -227,11 +227,19 @@ func (m *Manager) SetActive(pathOrID string) (models.Project, bool) {
 		if p.ID == pathOrID || p.Path == pathOrID {
 			m.config.Projects[i].LastOpened = time.Now()
 			m.config.ActivePath = p.Path
+			m.config.ActiveSubRepo = ""
 			_ = m.save()
 			return m.config.Projects[i], true
 		}
 	}
 	return models.Project{}, false
+}
+
+func (m *Manager) SetActiveSubRepo(subRepoPath string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.config.ActiveSubRepo = subRepoPath
+	_ = m.save()
 }
 
 func (m *Manager) SetTheme(theme string) {

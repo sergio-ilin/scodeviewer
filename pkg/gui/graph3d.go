@@ -34,26 +34,32 @@ type Graph3DView struct {
 	zoom       float64
 	panX, panY float64
 	autoRotate bool
+	navMode    string // "orbit" or "pan"
+	spaceHeld  bool
 
 	// Pointer interaction
 	lastPos    f32.Point
 	dragStart  f32.Point
 	isDragging bool
 
-	// Selected & Hovered state
+	// Selected node
 	selectedHash string
 
-	// Camera Preset Buttons
-	btnIso        widget.Clickable
-	btnTop        widget.Clickable
-	btnFront      widget.Clickable
-	btnReset      widget.Clickable
-	btnAutoRotate widget.Clickable
-	btnZoomIn     widget.Clickable
-	btnZoomOut    widget.Clickable
-	btnCopyHash   widget.Clickable
+	// Navigation Mode & Preset Buttons
+	btnModeOrbit     widget.Clickable
+	btnModePan       widget.Clickable
+	btnIso           widget.Clickable
+	btnTop           widget.Clickable
+	btnFront         widget.Clickable
+	btnReset         widget.Clickable
+	btnFocusSelected widget.Clickable
+	btnAutoRotate    widget.Clickable
+	btnZoomIn        widget.Clickable
+	btnZoomOut       widget.Clickable
+	btnCopyHash      widget.Clickable
+	btnCloseCard     widget.Clickable
 
-	// Screen projected positions for hit testing
+	// Screen projected positions for hit testing & rendering
 	projectedNodes []projectedNode
 }
 
@@ -75,14 +81,25 @@ type projectedEdge struct {
 	col     color.NRGBA
 }
 
+type mergeCluster struct {
+	mergeIdx    int
+	mergeHash   string
+	author      string
+	branch      string
+	commitCount int
+	nodeIndices []int
+	col         color.NRGBA
+}
+
 func NewGraph3DView(app *App) *Graph3DView {
 	return &Graph3DView{
-		app:   app,
-		yaw:   0.38,
-		pitch: 0.24,
-		zoom:  1.0,
-		panX:  0,
-		panY:  -30,
+		app:     app,
+		navMode: "orbit",
+		yaw:     0.38,
+		pitch:   0.24,
+		zoom:    1.0,
+		panX:    0,
+		panY:    -30,
 	}
 }
 
@@ -101,8 +118,37 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 	// Clip everything strictly to 3D canvas so nothing ever draws over sidebar or window bounds!
 	defer clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Push(gtx.Ops).Pop()
 
-	// 1. Process Pointer Events on the 3D Canvas
+	// 1. Process Pointer & Keyboard Events
 	g.handlePointer(gtx)
+
+	// Process Keyboard Events (Space for Pan, O for Orbit, P for Pan, F for Focus, Esc to deselect)
+	for {
+		ev, ok := gtx.Event(key.Filter{Focus: g})
+		if !ok {
+			break
+		}
+		if ke, ok := ev.(key.Event); ok {
+			if ke.Name == key.NameSpace {
+				if ke.State == key.Press {
+					g.spaceHeld = true
+				} else if ke.State == key.Release {
+					g.spaceHeld = false
+				}
+			} else if ke.State == key.Press {
+				switch ke.Name {
+				case "O", "o":
+					g.navMode = "orbit"
+				case "P", "p", "H", "h":
+					g.navMode = "pan"
+				case "F", "f":
+					g.focusSelectedOrCenter()
+				case key.NameEscape:
+					g.selectedHash = ""
+				}
+			}
+			gtx.Execute(op.InvalidateCmd{})
+		}
+	}
 
 	// 2. Handle Auto-Rotation
 	if g.autoRotate {
@@ -113,13 +159,21 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 		gtx.Execute(op.InvalidateCmd{})
 	}
 
+	mergeCount := 0
+	for _, n := range data.Nodes {
+		if n.IsMerge {
+			mergeCount++
+		}
+	}
+
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		// 1. Top Controls Toolbar (Presets, Camera, Zoom)
+		// 1. Top Controls Toolbar (Mode, Presets, Reset, Zoom)
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(6), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return drawWithBorder(gtx, pal.HeaderBg, unit.Dp(8), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
-					return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+							// App / View Title
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -134,31 +188,51 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 									}),
 								)
 							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(16)}.Layout),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								w := gtx.Dp(unit.Dp(1))
 								h := gtx.Dp(unit.Dp(18))
 								paint.FillShape(gtx.Ops, pal.Border, clip.Rect(image.Rect(0, 0, w, h)).Op())
 								return layout.Dimensions{Size: image.Pt(w, h)}
 							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(14)}.Layout),
-							// Presets
+							layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+
+							// NAVIGATION MODE TOGGLE: Orbit (Rotate) vs Pan (Move)
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return g.app.drawPillButton(gtx, &g.btnModeOrbit, "Orbit (Rotate)", g.navMode == "orbit", pal)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return g.app.drawPillButton(gtx, &g.btnModePan, "Pan (Space)", g.navMode == "pan" || g.spaceHeld, pal)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								w := gtx.Dp(unit.Dp(1))
+								h := gtx.Dp(unit.Dp(18))
+								paint.FillShape(gtx.Ops, pal.Border, clip.Rect(image.Rect(0, 0, w, h)).Op())
+								return layout.Dimensions{Size: image.Pt(w, h)}
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+
+							// CAMERA PRESETS
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return g.app.drawPillButton(gtx, &g.btnIso, "Isometric (3D)", false, pal)
 							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return g.app.drawPillButton(gtx, &g.btnTop, "Top (2D DAG)", false, pal)
 							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return g.app.drawPillButton(gtx, &g.btnFront, "Front (Timeline)", false, pal)
 							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+
+							// VIEW CONTROLS
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								return g.app.drawPillButton(gtx, &g.btnReset, "Reset View", false, pal)
+								return g.app.drawPillButton(gtx, &g.btnReset, "Center View", false, pal)
 							}),
-							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								rotText := "Auto-Rotate"
 								if g.autoRotate {
@@ -166,8 +240,10 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 								}
 								return g.app.drawPillButton(gtx, &g.btnAutoRotate, rotText, g.autoRotate, pal)
 							}),
+
 							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
-							// Zoom level indicator and buttons
+
+							// ZOOM CONTROLS
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								zoomPct := fmt.Sprintf("%d%%", int(g.zoom*100))
 								lbl := material.Label(g.app.theme, unit.Sp(11), zoomPct)
@@ -188,18 +264,18 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 			})
 		}),
 
-		// 2. Middle: Interactive 3D Viewport (Full area, no overlapping badges)
+		// 2. Middle: Interactive 3D Viewport
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			return layout.Stack{}.Layout(gtx,
 				layout.Expanded(func(gtx layout.Context) layout.Dimensions {
 					// Canvas background
 					paint.FillShape(gtx.Ops, pal.Bg, clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Op())
 
-					// Register pointer hit area (entire canvas area)
+					// Register pointer hit area
 					area := clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Push(gtx.Ops)
 					event.Op(gtx.Ops, g)
 
-					// Render the 3D Scene
+					// Render the 3D Scene with Merge Zones, Diamonds & Spheres
 					g.render3DScene(gtx, data, pal)
 					area.Pop()
 					return layout.Dimensions{Size: gtx.Constraints.Max}
@@ -236,19 +312,20 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 					return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Label(g.app.theme, unit.Sp(10), "Controls: ")
+								lbl := material.Label(g.app.theme, unit.Sp(10), "Navigation: ")
 								lbl.Font.Weight = font.Bold
 								lbl.Color = pal.Accent
 								return lbl.Layout(gtx)
 							}),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Label(g.app.theme, unit.Sp(10), "Left drag: Rotate  •  Right drag / Shift: Pan  •  Mouse wheel: Zoom in/out  •  Click node to inspect")
+								lbl := material.Label(g.app.theme, unit.Sp(10), "Space+Drag / Right Drag: Pan  •  Left Drag: Rotate  •  Mouse wheel: Zoom  •  Click node to inspect")
 								lbl.Color = pal.TextMuted
 								return lbl.Layout(gtx)
 							}),
 							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Label(g.app.theme, unit.Sp(10), fmt.Sprintf("%d Commits  •  %d Connections", len(data.Nodes), len(data.Edges)))
+								stats := fmt.Sprintf("%d Commits  •  %d Merges  •  %d Connections", len(data.Nodes), mergeCount, len(data.Edges))
+								lbl := material.Label(g.app.theme, unit.Sp(10), stats)
 								lbl.Color = pal.TextMuted
 								lbl.Font.Weight = font.Medium
 								return lbl.Layout(gtx)
@@ -261,8 +338,35 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 	)
 }
 
+func (g *Graph3DView) focusSelectedOrCenter() {
+	if g.selectedHash != "" {
+		for _, pn := range g.projectedNodes {
+			if pn.node.Hash == g.selectedHash {
+				g.panX = 0
+				g.panY = -float64(pn.node.Order)*30.0 + 120.0
+				g.zoom = 1.0
+				return
+			}
+		}
+	}
+	g.yaw = 0.38
+	g.pitch = 0.24
+	g.zoom = 1.0
+	g.panX = 0
+	g.panY = -30
+	g.autoRotate = false
+}
+
 func (g *Graph3DView) handlePointer(gtx layout.Context) {
-	// Handle button clicks
+	// Mode switcher buttons
+	if g.btnModeOrbit.Clicked(gtx) {
+		g.navMode = "orbit"
+	}
+	if g.btnModePan.Clicked(gtx) {
+		g.navMode = "pan"
+	}
+
+	// Camera Presets
 	if g.btnIso.Clicked(gtx) {
 		g.yaw = 0.42
 		g.pitch = 0.28
@@ -285,12 +389,8 @@ func (g *Graph3DView) handlePointer(gtx layout.Context) {
 		g.panY = -30
 	}
 	if g.btnReset.Clicked(gtx) {
-		g.yaw = 0.38
-		g.pitch = 0.24
-		g.zoom = 1.0
-		g.panX = 0
-		g.panY = -30
-		g.autoRotate = false
+		g.focusSelectedOrCenter()
+		gtx.Execute(op.InvalidateCmd{})
 	}
 	if g.btnAutoRotate.Clicked(gtx) {
 		g.autoRotate = !g.autoRotate
@@ -317,6 +417,7 @@ func (g *Graph3DView) handlePointer(gtx layout.Context) {
 		if e, ok := ev.(pointer.Event); ok {
 			switch e.Kind {
 			case pointer.Press:
+				gtx.Execute(key.FocusCmd{Tag: g})
 				g.lastPos = e.Position
 				g.dragStart = e.Position
 				g.isDragging = true
@@ -325,17 +426,23 @@ func (g *Graph3DView) handlePointer(gtx layout.Context) {
 				deltaY := float64(e.Position.Y - g.lastPos.Y)
 				g.lastPos = e.Position
 
-				if e.Buttons.Contain(pointer.ButtonSecondary) || e.Modifiers.Contain(key.ModShift) {
+				isPan := g.navMode == "pan" ||
+					g.spaceHeld ||
+					e.Buttons.Contain(pointer.ButtonSecondary) ||
+					e.Buttons.Contain(pointer.ButtonTertiary) ||
+					e.Modifiers.Contain(key.ModShift)
+
+				if isPan {
 					g.panX += deltaX
 					g.panY += deltaY
 				} else {
 					g.yaw += deltaX * 0.006
 					g.pitch += deltaY * 0.006
-					if g.pitch < -1.4 {
-						g.pitch = -1.4
+					if g.pitch < -1.45 {
+						g.pitch = -1.45
 					}
-					if g.pitch > 1.4 {
-						g.pitch = 1.4
+					if g.pitch > 1.45 {
+						g.pitch = 1.45
 					}
 				}
 				gtx.Execute(op.InvalidateCmd{})
@@ -344,21 +451,20 @@ func (g *Graph3DView) handlePointer(gtx layout.Context) {
 				dx := e.Position.X - g.dragStart.X
 				dy := e.Position.Y - g.dragStart.Y
 				if dx*dx+dy*dy < 36 {
-					// Hit test nodes
 					g.hitTestNode(e.Position)
 				}
 				gtx.Execute(op.InvalidateCmd{})
 			case pointer.Scroll:
 				if e.Modifiers.Contain(key.ModShift) {
-					// Shift+Wheel: horizontal pan
 					g.panX -= float64(e.Scroll.Y) * 0.5
 				} else if e.Scroll.Y != 0 {
-					// Mouse wheel zoom
 					if e.Scroll.Y > 0 {
-						g.zoom = math.Max(0.15, g.zoom*0.88)
+						g.zoom = math.Max(0.12, g.zoom*0.86)
 					} else {
-						g.zoom = math.Min(6.0, g.zoom*1.14)
+						g.zoom = math.Min(6.0, g.zoom*1.16)
 					}
+				} else if e.Scroll.X != 0 {
+					g.panX -= float64(e.Scroll.X) * 0.5
 				}
 				gtx.Execute(op.InvalidateCmd{})
 			}
@@ -377,7 +483,8 @@ func (g *Graph3DView) hitTestNode(pos f32.Point) {
 		dx := pos.X - pn.screenPos.X
 		dy := pos.Y - pn.screenPos.Y
 		dist := float32(math.Sqrt(float64(dx*dx + dy*dy)))
-		if dist <= pn.radius+10 && dist < bestDist {
+		hitRadius := pn.radius + 12
+		if dist <= hitRadius && dist < bestDist {
 			bestDist = dist
 			bestHash = pn.node.Hash
 		}
@@ -392,6 +499,70 @@ func (g *Graph3DView) hitTestNode(pos f32.Point) {
 	}
 }
 
+func computeMergeClusters(data *git.Graph3DData) []mergeCluster {
+	if data == nil || len(data.Nodes) == 0 {
+		return nil
+	}
+
+	var clusters []mergeCluster
+	visited := make(map[string]bool)
+
+	for i, n := range data.Nodes {
+		if !n.IsMerge || len(n.ParentHashes) < 2 {
+			continue
+		}
+
+		cluster := mergeCluster{
+			mergeIdx:  i,
+			mergeHash: n.Hash,
+			author:    n.AuthorName,
+			branch:    n.Branch,
+			col:       getAuthorColor(n.AuthorName),
+		}
+
+		var queue []string
+		for _, pHash := range n.ParentHashes[1:] {
+			queue = append(queue, pHash)
+		}
+
+		for len(queue) > 0 && len(cluster.nodeIndices) < 12 {
+			currHash := queue[0]
+			queue = queue[1:]
+
+			if visited[currHash] || currHash == n.ParentHashes[0] {
+				continue
+			}
+			visited[currHash] = true
+
+			idx, exists := data.NodeByHash[currHash]
+			if !exists {
+				continue
+			}
+
+			cNode := data.Nodes[idx]
+			cluster.nodeIndices = append(cluster.nodeIndices, idx)
+			if cluster.branch == "" && cNode.Branch != "" {
+				cluster.branch = cNode.Branch
+			}
+			if cluster.author == "" && cNode.AuthorName != "" {
+				cluster.author = cNode.AuthorName
+				cluster.col = getAuthorColor(cNode.AuthorName)
+			}
+
+			if len(cNode.ParentHashes) > 0 && cNode.ParentHashes[0] != n.ParentHashes[0] {
+				queue = append(queue, cNode.ParentHashes[0])
+			}
+		}
+
+		cluster.commitCount = len(cluster.nodeIndices)
+		if cluster.commitCount > 0 {
+			clusters = append(clusters, cluster)
+		}
+	}
+
+	return clusters
+}
+
 func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, pal Palette) {
 	if data == nil || len(data.Nodes) == 0 {
 		return
@@ -400,7 +571,6 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 	screenW := float64(gtx.Constraints.Max.X)
 	screenH := float64(gtx.Constraints.Max.Y)
 
-	// Calculate center of graph in 3D
 	maxLane := 0
 	for _, n := range data.Nodes {
 		if n.Lane > maxLane {
@@ -408,30 +578,13 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 		}
 	}
 	cx := float64(maxLane) * 50.0
-	// Centered on recent commits (HEAD is at Order 0)
 	cy := 180.0
 	cz := 0.0
 
-	laneColors := []color.NRGBA{
-		{R: 56, G: 139, B: 253, A: 255},  // Lane 0: Master (Blue)
-		{R: 63, G: 185, B: 80, A: 255},   // Lane 1: Feature 1 (Green)
-		{R: 163, G: 113, B: 247, A: 255}, // Lane 2: Feature 2 (Purple)
-		{R: 240, G: 136, B: 62, A: 255},  // Lane 3: Feature 3 (Orange)
-		{R: 247, G: 120, B: 186, A: 255}, // Lane 4: Feature 4 (Pink)
-		{R: 57, G: 197, B: 207, A: 255},  // Lane 5: Feature 5 (Teal)
-	}
-
-	getLaneColor := func(lane int) color.NRGBA {
-		if lane < 0 {
-			lane = -lane
-		}
-		return laneColors[lane%len(laneColors)]
-	}
-
 	// 0. Render subtle 3D floor runway lines for lanes
-	gridCol := color.NRGBA{R: pal.Border.R, G: pal.Border.G, B: pal.Border.B, A: 50}
+	gridCol := color.NRGBA{R: pal.Border.R, G: pal.Border.G, B: pal.Border.B, A: 45}
 	for l := 0; l <= maxLane+1; l++ {
-		lx := float64(l) * 100.0
+		lx := float64(l) * 110.0
 		sx1, sy1, _, v1 := project3D(lx, -60.0, -10.0, cx, cy, cz, g.yaw, g.pitch, g.zoom, screenW, screenH, g.panX, g.panY)
 		sx2, sy2, _, v2 := project3D(lx, math.Min(float64(len(data.Nodes))*60.0, 2400.0), -10.0, cx, cy, cz, g.yaw, g.pitch, g.zoom, screenW, screenH, g.panX, g.panY)
 		if v1 && v2 {
@@ -446,26 +599,33 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 	// 1. Project all nodes into screen coordinates
 	g.projectedNodes = make([]projectedNode, len(data.Nodes))
 	for i, n := range data.Nodes {
-		worldX := float64(n.Lane) * 100.0
+		worldX := float64(n.Lane) * 110.0
 		worldY := float64(n.Order) * 60.0
 		worldZ := 0.0
 		if n.IsMerge {
-			worldZ = 35.0 // Elevated in 3D
+			worldZ = 40.0 // Elevated in 3D
 		}
 
 		sx, sy, depth, visible := project3D(worldX, worldY, worldZ, cx, cy, cz, g.yaw, g.pitch, g.zoom, screenW, screenH, g.panX, g.panY)
 
-		col := getLaneColor(n.Lane)
-		if n.IsMerge {
-			col = color.NRGBA{R: 220, G: 100, B: 255, A: 255} // Purple/Magenta for Merges
-		}
+		col := getAuthorColor(n.AuthorName)
 
-		rad := float32(11.0 * g.zoom)
-		if rad < 5 {
-			rad = 5
-		}
-		if rad > 24 {
-			rad = 24
+		rad := float32(9.0 * g.zoom)
+		if n.IsMerge {
+			rad = float32(16.0 * g.zoom)
+			if rad < 8 {
+				rad = 8
+			}
+			if rad > 32 {
+				rad = 32
+			}
+		} else {
+			if rad < 4 {
+				rad = 4
+			}
+			if rad > 18 {
+				rad = 18
+			}
 		}
 
 		g.projectedNodes[i] = projectedNode{
@@ -479,7 +639,45 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 		}
 	}
 
-	// 2. Project Edges
+	// 2. Render Merge Zones / Feature Hulls (Behind edges and nodes)
+	clusters := computeMergeClusters(data)
+	for _, c := range clusters {
+		pMerge := g.projectedNodes[c.mergeIdx]
+		if !pMerge.visible {
+			continue
+		}
+
+		minX := pMerge.screenPos.X
+		maxX := pMerge.screenPos.X
+		minY := pMerge.screenPos.Y
+		maxY := pMerge.screenPos.Y
+		hasVis := false
+
+		for _, nIdx := range c.nodeIndices {
+			pn := g.projectedNodes[nIdx]
+			if pn.visible {
+				hasVis = true
+				if pn.screenPos.X < minX {
+					minX = pn.screenPos.X
+				}
+				if pn.screenPos.X > maxX {
+					maxX = pn.screenPos.X
+				}
+				if pn.screenPos.Y < minY {
+					minY = pn.screenPos.Y
+				}
+				if pn.screenPos.Y > maxY {
+					maxY = pn.screenPos.Y
+				}
+			}
+		}
+
+		if hasVis {
+			g.drawMergeZone(gtx, c, f32.Pt(minX, minY), f32.Pt(maxX, maxY), pal)
+		}
+	}
+
+	// 3. Project Edges
 	var projEdges []projectedEdge
 	for _, e := range data.Edges {
 		fromIdx, hasFrom := data.NodeByHash[e.FromHash]
@@ -494,9 +692,10 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 		}
 
 		edgeCol := pFrom.col
-		edgeCol.A = 180
+		edgeCol.A = 170
 		if e.IsMerge {
-			edgeCol = color.NRGBA{R: 230, G: 120, B: 255, A: 220}
+			edgeCol = pTo.col
+			edgeCol.A = 220
 		}
 
 		projEdges = append(projEdges, projectedEdge{
@@ -508,7 +707,7 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 		})
 	}
 
-	// 3. Render Edges (Depth Sorted: back to front)
+	// Depth sort edges
 	sort.Slice(projEdges, func(i, j int) bool {
 		return projEdges[i].depth < projEdges[j].depth
 	})
@@ -518,13 +717,13 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 		path.Begin(gtx.Ops)
 		path.MoveTo(e.from)
 		if e.isMerge {
-			// 3D Arc between branches
+			// 3D Arc between branches into merge commit
 			midX := (e.from.X + e.to.X) / 2
-			midY := (e.from.Y+e.to.Y)/2 - float32(25*g.zoom)
+			midY := (e.from.Y+e.to.Y)/2 - float32(28*g.zoom)
 			path.QuadTo(f32.Pt(midX, midY), e.to)
-			strokeW := float32(2.5 * g.zoom)
-			if strokeW < 1.5 {
-				strokeW = 1.5
+			strokeW := float32(2.8 * g.zoom)
+			if strokeW < 1.6 {
+				strokeW = 1.6
 			}
 			paint.FillShape(gtx.Ops, e.col, clip.Stroke{Path: path.End(), Width: strokeW}.Op())
 		} else {
@@ -556,21 +755,55 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 		pn := g.projectedNodes[sn.idx]
 		isSelected := pn.node.Hash == g.selectedHash
 
-		// 3D Volumetric Block / Prism
-		g.draw3DBlock(gtx, pn.screenPos, pn.radius, pn.col, pn.isMerge, isSelected, pal)
+		// RENDER SHAPE: Diamond for Merge Commits vs Sphere for Regular Commits!
+		if pn.isMerge {
+			g.draw3DDiamond(gtx, pn.screenPos, pn.radius, pn.col, isSelected, pal)
 
-		// Label (ShortHash + Branch tag)
-		if g.zoom >= 0.60 {
+			// Floating "MERGE" badge above diamond
+			if g.zoom >= 0.28 {
+				mBadgeY := pn.screenPos.Y - pn.radius*1.4 - 12
+				macroM := op.Record(gtx.Ops)
+				mBg := color.NRGBA{R: pal.HeaderBg.R, G: pal.HeaderBg.G, B: pal.HeaderBg.B, A: 245}
+				drawWithRoundedBg(gtx, mBg, unit.Dp(3), func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Top: unit.Dp(1), Bottom: unit.Dp(1), Left: unit.Dp(4), Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Label(g.app.theme, unit.Sp(8), "MERGE")
+								lbl.Color = pn.col
+								lbl.Font.Weight = font.Bold
+								return lbl.Layout(gtx)
+							}),
+						)
+					})
+				})
+				callM := macroM.Stop()
+				mStack := op.Offset(image.Pt(int(pn.screenPos.X-16), int(mBadgeY))).Push(gtx.Ops)
+				callM.Add(gtx.Ops)
+				mStack.Pop()
+			}
+		} else {
+			g.draw3DSphere(gtx, pn.screenPos, pn.radius, pn.col, isSelected, pal)
+		}
+
+		// Text Labels (ShortHash + Author Name)
+		if g.zoom >= 0.45 || (pn.isMerge && g.zoom >= 0.32) {
 			labelX := pn.screenPos.X + pn.radius + 8
 			labelY := pn.screenPos.Y - 6
 
 			macro := op.Record(gtx.Ops)
-			lbl := material.Label(g.app.theme, unit.Sp(9.5), pn.node.ShortHash)
+			lblText := pn.node.ShortHash
+			if pn.isMerge {
+				lblText = fmt.Sprintf("%s (%s)", pn.node.ShortHash, pn.node.AuthorName)
+			}
+			lbl := material.Label(g.app.theme, unit.Sp(9.5), lblText)
 			if isSelected {
 				lbl.Font.Weight = font.Bold
 				lbl.Color = pal.Accent
-			} else {
+			} else if pn.isMerge {
+				lbl.Font.Weight = font.SemiBold
 				lbl.Color = pal.Text
+			} else {
+				lbl.Color = pal.TextMuted
 			}
 			dims := lbl.Layout(gtx)
 			call := macro.Stop()
@@ -579,7 +812,7 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 			call.Add(gtx.Ops)
 			tStack.Pop()
 
-			// If has branch ref
+			// Branch ref badge
 			if len(pn.node.Refs) > 0 {
 				refText := pn.node.Refs[0]
 				macro2 := op.Record(gtx.Ops)
@@ -606,9 +839,75 @@ func (g *Graph3DView) render3DScene(gtx layout.Context, data *git.Graph3DData, p
 	}
 }
 
-// Draw a stylized 3D volumetric block with isometric top, front, and side faces
-func (g *Graph3DView) draw3DBlock(gtx layout.Context, center f32.Point, rad float32, baseCol color.NRGBA, isMerge, isSelected bool, pal Palette) {
-	// Selection Halo
+// Draw a Merge Zone / Feature Hull: translucent capsule enclosing commits of a branch merging into master
+func (g *Graph3DView) drawMergeZone(gtx layout.Context, c mergeCluster, minPt, maxPt f32.Point, pal Palette) {
+	padX := float32(24.0)
+	padY := float32(16.0)
+	x0 := minPt.X - padX
+	y0 := minPt.Y - padY
+	x1 := maxPt.X + padX
+	y1 := maxPt.Y + padY
+
+	w := int(x1 - x0)
+	h := int(y1 - y0)
+	if w < 50 || h < 35 {
+		return
+	}
+
+	bgCol := color.NRGBA{R: c.col.R, G: c.col.G, B: c.col.B, A: 24}
+	borderCol := color.NRGBA{R: c.col.R, G: c.col.G, B: c.col.B, A: 110}
+
+	offset := op.Offset(image.Pt(int(x0), int(y0))).Push(gtx.Ops)
+	r := gtx.Dp(unit.Dp(12))
+	rr := clip.RRect{
+		Rect: image.Rect(0, 0, w, h),
+		SE:   r, SW: r, NW: r, NE: r,
+	}
+	paint.FillShape(gtx.Ops, bgCol, rr.Op(gtx.Ops))
+	paint.FillShape(gtx.Ops, borderCol, clip.Stroke{Path: rr.Path(gtx.Ops), Width: 1.5}.Op())
+
+	// Floating Author & Feature Banner at top of the Merge Zone
+	if g.zoom >= 0.28 {
+		badgeMacro := op.Record(gtx.Ops)
+		badgeBg := color.NRGBA{R: pal.HeaderBg.R, G: pal.HeaderBg.G, B: pal.HeaderBg.B, A: 245}
+		drawWithRoundedBg(gtx, badgeBg, unit.Dp(4), func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						sz := gtx.Dp(unit.Dp(7))
+						paint.FillShape(gtx.Ops, c.col, clip.Ellipse{Min: image.Pt(0, 0), Max: image.Pt(sz, sz)}.Op(gtx.Ops))
+						return layout.Dimensions{Size: image.Pt(sz, sz)}
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(5)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Label(g.app.theme, unit.Sp(9.5), c.author)
+						lbl.Font.Weight = font.Bold
+						lbl.Color = pal.Text
+						return lbl.Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						desc := fmt.Sprintf("• %d commits", c.commitCount)
+						if c.branch != "" {
+							desc = fmt.Sprintf("• %s (%d)", c.branch, c.commitCount)
+						}
+						lbl := material.Label(g.app.theme, unit.Sp(9), desc)
+						lbl.Color = pal.TextMuted
+						return lbl.Layout(gtx)
+					}),
+				)
+			})
+		})
+		badgeCall := badgeMacro.Stop()
+		bStack := op.Offset(image.Pt(10, 8)).Push(gtx.Ops)
+		badgeCall.Add(gtx.Ops)
+		bStack.Pop()
+	}
+	offset.Pop()
+}
+
+// Regular Commit: 3D Spherical bead with specular lighting
+func (g *Graph3DView) draw3DSphere(gtx layout.Context, center f32.Point, rad float32, baseCol color.NRGBA, isSelected bool, pal Palette) {
 	if isSelected {
 		haloR := rad + 6
 		var p clip.Path
@@ -617,62 +916,85 @@ func (g *Graph3DView) draw3DBlock(gtx layout.Context, center f32.Point, rad floa
 		p.Arc(f32.Pt(center.X-haloR, center.Y), f32.Pt(center.X+haloR, center.Y), math.Pi)
 		p.Arc(f32.Pt(center.X+haloR, center.Y), f32.Pt(center.X-haloR, center.Y), math.Pi)
 		p.Close()
-		paint.FillShape(gtx.Ops, color.NRGBA{R: pal.Accent.R, G: pal.Accent.G, B: pal.Accent.B, A: 160}, clip.Stroke{Path: p.End(), Width: 3.5}.Op())
+		paint.FillShape(gtx.Ops, color.NRGBA{R: pal.Accent.R, G: pal.Accent.G, B: pal.Accent.B, A: 180}, clip.Stroke{Path: p.End(), Width: 3.5}.Op())
 	}
 
-	w := rad * 1.5
-	h := rad * 0.9
-	d := rad * 0.7
+	// Base circle
+	var p clip.Path
+	p.Begin(gtx.Ops)
+	p.MoveTo(f32.Pt(center.X-rad, center.Y))
+	p.Arc(f32.Pt(center.X-rad, center.Y), f32.Pt(center.X+rad, center.Y), math.Pi)
+	p.Arc(f32.Pt(center.X+rad, center.Y), f32.Pt(center.X-rad, center.Y), math.Pi)
+	p.Close()
+	paint.FillShape(gtx.Ops, baseCol, clip.Outline{Path: p.End()}.Op())
 
-	// Colors for 3D shading
-	topCol := shadeColor(baseCol, 1.35)  // Illuminated top
-	frontCol := baseCol                 // Base front
-	sideCol := shadeColor(baseCol, 0.7) // Shadow side
+	// Specular highlight on top-left for 3D illusion
+	hiRad := rad * 0.45
+	hiX := center.X - rad*0.3
+	hiY := center.Y - rad*0.3
+	var hiPath clip.Path
+	hiPath.Begin(gtx.Ops)
+	hiPath.MoveTo(f32.Pt(hiX-hiRad, hiY))
+	hiPath.Arc(f32.Pt(hiX-hiRad, hiY), f32.Pt(hiX+hiRad, hiY), math.Pi)
+	hiPath.Arc(f32.Pt(hiX+hiRad, hiY), f32.Pt(hiX-hiRad, hiY), math.Pi)
+	hiPath.Close()
+	paint.FillShape(gtx.Ops, shadeColor(baseCol, 1.55), clip.Outline{Path: hiPath.End()}.Op())
 
-	// Vertices for 3D block
-	p0 := f32.Pt(center.X, center.Y-h-d)
-	p1 := f32.Pt(center.X+w, center.Y-d)
-	p2 := f32.Pt(center.X, center.Y+h-d)
-	p3 := f32.Pt(center.X-w, center.Y-d)
+	// Subtle border
+	var borderPath clip.Path
+	borderPath.Begin(gtx.Ops)
+	borderPath.MoveTo(f32.Pt(center.X-rad, center.Y))
+	borderPath.Arc(f32.Pt(center.X-rad, center.Y), f32.Pt(center.X+rad, center.Y), math.Pi)
+	borderPath.Arc(f32.Pt(center.X+rad, center.Y), f32.Pt(center.X-rad, center.Y), math.Pi)
+	borderPath.Close()
+	paint.FillShape(gtx.Ops, shadeColor(baseCol, 0.6), clip.Stroke{Path: borderPath.End(), Width: 1.0}.Op())
+}
 
-	p4 := f32.Pt(center.X, center.Y+h)
-	p5 := f32.Pt(center.X-w, center.Y)
-	p6 := f32.Pt(center.X+w, center.Y)
-
-	// 1. Front-Left Face
-	drawPolygon(gtx, []f32.Point{p3, p2, p4, p5}, frontCol)
-
-	// 2. Front-Right (Side) Face
-	drawPolygon(gtx, []f32.Point{p2, p1, p6, p4}, sideCol)
-
-	// 3. Top Face (Illuminated)
-	drawPolygon(gtx, []f32.Point{p0, p1, p2, p3}, topCol)
-
-	// 4. Edges stroke
-	edgeCol := shadeColor(baseCol, 0.5)
-	var edgePath clip.Path
-	edgePath.Begin(gtx.Ops)
-	edgePath.MoveTo(p0)
-	edgePath.LineTo(p1)
-	edgePath.LineTo(p6)
-	edgePath.LineTo(p4)
-	edgePath.LineTo(p5)
-	edgePath.LineTo(p3)
-	edgePath.Close()
-	paint.FillShape(gtx.Ops, edgeCol, clip.Stroke{Path: edgePath.End(), Width: 1.0}.Op())
-
-	// If merge, draw central elevated glowing core
-	if isMerge {
-		coreR := rad * 0.55
-		var cp clip.Path
-		cp.Begin(gtx.Ops)
-		cp.MoveTo(f32.Pt(center.X-coreR, center.Y-d))
-		cp.LineTo(f32.Pt(center.X, center.Y-coreR-d))
-		cp.LineTo(f32.Pt(center.X+coreR, center.Y-d))
-		cp.LineTo(f32.Pt(center.X, center.Y+coreR-d))
-		cp.Close()
-		paint.FillShape(gtx.Ops, color.NRGBA{R: 255, G: 255, B: 255, A: 230}, clip.Outline{Path: cp.End()}.Op())
+// Merge Commit: 3D Diamond / Octahedral Hub with glowing halo and facets
+func (g *Graph3DView) draw3DDiamond(gtx layout.Context, center f32.Point, rad float32, baseCol color.NRGBA, isSelected bool, pal Palette) {
+	// Glowing halo ring around Merge Commit
+	haloR := rad + 7
+	var p clip.Path
+	p.Begin(gtx.Ops)
+	p.MoveTo(f32.Pt(center.X-haloR, center.Y))
+	p.Arc(f32.Pt(center.X-haloR, center.Y), f32.Pt(center.X+haloR, center.Y), math.Pi)
+	p.Arc(f32.Pt(center.X+haloR, center.Y), f32.Pt(center.X-haloR, center.Y), math.Pi)
+	p.Close()
+	glowCol := color.NRGBA{R: baseCol.R, G: baseCol.G, B: baseCol.B, A: 90}
+	if isSelected {
+		glowCol = color.NRGBA{R: pal.Accent.R, G: pal.Accent.G, B: pal.Accent.B, A: 200}
 	}
+	paint.FillShape(gtx.Ops, glowCol, clip.Stroke{Path: p.End(), Width: 2.8}.Op())
+
+	w := rad * 1.25
+	h := rad * 1.45
+
+	pTop := f32.Pt(center.X, center.Y-h)
+	pBottom := f32.Pt(center.X, center.Y+h)
+	pLeft := f32.Pt(center.X-w, center.Y)
+	pRight := f32.Pt(center.X+w, center.Y)
+	pCenter := f32.Pt(center.X, center.Y)
+
+	topCol := shadeColor(baseCol, 1.45)
+	leftCol := shadeColor(baseCol, 1.1)
+	rightCol := shadeColor(baseCol, 0.85)
+	bottomCol := shadeColor(baseCol, 0.65)
+
+	// 4 facets for 3D diamond
+	drawPolygon(gtx, []f32.Point{pTop, pLeft, pCenter}, topCol)
+	drawPolygon(gtx, []f32.Point{pTop, pRight, pCenter}, leftCol)
+	drawPolygon(gtx, []f32.Point{pBottom, pLeft, pCenter}, rightCol)
+	drawPolygon(gtx, []f32.Point{pBottom, pRight, pCenter}, bottomCol)
+
+	// Crisp border
+	var bPath clip.Path
+	bPath.Begin(gtx.Ops)
+	bPath.MoveTo(pTop)
+	bPath.LineTo(pRight)
+	bPath.LineTo(pBottom)
+	bPath.LineTo(pLeft)
+	bPath.Close()
+	paint.FillShape(gtx.Ops, color.NRGBA{R: 255, G: 255, B: 255, A: 210}, clip.Stroke{Path: bPath.End(), Width: 1.8}.Op())
 }
 
 func drawPolygon(gtx layout.Context, pts []f32.Point, col color.NRGBA) {
@@ -703,6 +1025,28 @@ func shadeColor(c color.NRGBA, factor float64) color.NRGBA {
 		b = 255
 	}
 	return color.NRGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: c.A}
+}
+
+func getAuthorColor(author string) color.NRGBA {
+	authorColors := []color.NRGBA{
+		{R: 56, G: 139, B: 253, A: 255},  // Blue
+		{R: 163, G: 113, B: 247, A: 255}, // Purple / Violet
+		{R: 63, G: 185, B: 80, A: 255},   // Green
+		{R: 240, G: 136, B: 62, A: 255},  // Orange
+		{R: 247, G: 120, B: 186, A: 255}, // Pink
+		{R: 57, G: 197, B: 207, A: 255},  // Cyan
+		{R: 227, G: 179, B: 65, A: 255},  // Gold / Yellow
+		{R: 255, G: 107, B: 129, A: 255}, // Coral
+	}
+	name := strings.ToLower(strings.TrimSpace(author))
+	if name == "" {
+		return authorColors[0]
+	}
+	hash := 0
+	for _, c := range name {
+		hash = (hash*31 + int(c)) & 0x7FFFFFFF
+	}
+	return authorColors[hash%len(authorColors)]
 }
 
 func project3D(x, y, z, cx, cy, cz, yaw, pitch, zoom, screenW, screenH, panX, panY float64) (screenX, screenY, depth float64, visible bool) {
@@ -740,11 +1084,14 @@ func (g *Graph3DView) renderInspectorCard(gtx layout.Context, n *git.Graph3DNode
 		})
 		g.app.copiedHash = n.ShortHash
 	}
+	if g.btnCloseCard.Clicked(gtx) {
+		g.selectedHash = ""
+	}
 
 	return drawWithBorder(gtx, pal.HeaderBg, unit.Dp(8), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				// Header: Type badge + Hash copy badge
+				// Header: Type badge + Hash copy badge + Close button
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -754,47 +1101,53 @@ func (g *Graph3DView) renderInspectorCard(gtx layout.Context, n *git.Graph3DNode
 							return g.app.drawTag(gtx, "COMMIT", pal.BadgeBg, pal.Accent)
 						}),
 						layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
-						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 							isCopied := g.app.copiedHash == n.ShortHash
 							return g.app.drawCopyBadge(gtx, &g.btnCopyHash, n.Hash, n.ShortHash, isCopied, pal)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return g.app.drawIconButton(gtx, &g.btnCloseCard, g.app.icons.Close, false, pal)
 						}),
 					)
 				}),
 				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
-				// Commit message
+
+				// Message
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(g.app.theme, unit.Sp(12), n.Message)
+					lbl := material.Label(g.app.theme, unit.Sp(11.5), n.Message)
 					lbl.Font.Weight = font.Bold
 					lbl.Color = pal.Text
 					return lbl.Layout(gtx)
 				}),
 				layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
-				// Author + Date
+
+				// Author & Date
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					meta := fmt.Sprintf("%s  •  %s", n.AuthorName, formatRelativeTime(n.Date))
-					lbl := material.Label(g.app.theme, unit.Sp(10.5), meta)
+					sub := fmt.Sprintf("%s  •  %s", n.AuthorName, formatRelativeTime(n.Date))
+					lbl := material.Label(g.app.theme, unit.Sp(10), sub)
 					lbl.Color = pal.TextMuted
 					return lbl.Layout(gtx)
 				}),
-				// Parents row
+
+				// Parents info (if merge)
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					if len(n.ParentHashes) == 0 {
-						return layout.Dimensions{}
-					}
-					var parentShorts []string
-					for _, p := range n.ParentHashes {
-						if len(p) > 7 {
-							parentShorts = append(parentShorts, p[:7])
-						} else {
-							parentShorts = append(parentShorts, p)
+					if len(n.ParentHashes) > 1 {
+						pShorts := make([]string, len(n.ParentHashes))
+						for idx, ph := range n.ParentHashes {
+							if len(ph) > 7 {
+								pShorts[idx] = ph[:7]
+							} else {
+								pShorts[idx] = ph
+							}
 						}
+						info := "Parents: " + strings.Join(pShorts, ", ")
+						return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Label(g.app.theme, unit.Sp(9.5), info)
+							lbl.Color = pal.Accent
+							return lbl.Layout(gtx)
+						})
 					}
-					return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Label(g.app.theme, unit.Sp(10), fmt.Sprintf("Parents: %s", strings.Join(parentShorts, ", ")))
-						lbl.Color = pal.TextMuted
-						return lbl.Layout(gtx)
-					})
+					return layout.Dimensions{}
 				}),
 			)
 		})

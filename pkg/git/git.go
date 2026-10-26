@@ -187,6 +187,32 @@ func (s *Service) GetBranches(repoPath string) ([]models.BranchInfo, error) {
 	return branches, nil
 }
 
+// GetProjectStatus inspects repoPath to determine if it has uncommitted changes and recent commits (within 30 days)
+func (s *Service) GetProjectStatus(repoPath string) (hasUncommitted bool, hasRecent30d bool, lastDate time.Time, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	// Check uncommitted changes
+	statusOut, sErr := s.runGit(ctx, repoPath, "status", "--porcelain")
+	if sErr == nil && strings.TrimSpace(statusOut) != "" {
+		hasUncommitted = true
+	}
+
+	// Check last commit date
+	logOut, lErr := s.runGit(ctx, repoPath, "log", "-1", "--format=%ct")
+	if lErr == nil && strings.TrimSpace(logOut) != "" {
+		epoch, pErr := strconv.ParseInt(strings.TrimSpace(logOut), 10, 64)
+		if pErr == nil && epoch > 0 {
+			lastDate = time.Unix(epoch, 0)
+			if time.Since(lastDate) < 30*24*time.Hour {
+				hasRecent30d = true
+			}
+		}
+	}
+
+	return hasUncommitted, hasRecent30d, lastDate, nil
+}
+
 // GetUncommittedChanges checks working directory for unstaged/staged changes
 func (s *Service) GetUncommittedChanges(repoPath string) (*models.CommitDetail, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)

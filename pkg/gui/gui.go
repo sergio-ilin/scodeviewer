@@ -30,6 +30,12 @@ import (
 	"scodeviewer/pkg/models"
 )
 
+type ProjectStatus struct {
+	HasUncommitted bool
+	HasRecent30d   bool
+	LastCommitDate time.Time
+}
+
 type App struct {
 	window       *app.Window
 	theme        *material.Theme
@@ -38,7 +44,7 @@ type App struct {
 	rootPath     string
 	activeRepo   string
 	repoName     string
-	activeTab    string // "commits", "updates"
+	activeTab    string // "commits", "updates", "graph3d"
 	isDataLoaded bool
 
 	// State
@@ -79,6 +85,10 @@ type App struct {
 	btnAddProject   widget.Clickable
 	btnTabCommits   widget.Clickable
 	btnTabUpdates   widget.Clickable
+	btnTab3DGraph   widget.Clickable
+	graph3dView     *Graph3DView
+	graph3dData     *git.Graph3DData
+	projStatuses    map[string]ProjectStatus
 	projectClicks     []widget.Clickable
 	projectRenameBtns []widget.Clickable
 	projectDeleteBtns []widget.Clickable
@@ -173,9 +183,11 @@ func NewApp(initialPath string) *App {
 		filesListState: widget.List{List: layout.List{Axis: layout.Vertical}},
 		updatesList:    widget.List{List: layout.List{Axis: layout.Vertical}},
 		collapsedFiles:  make(map[string]bool),
-		icons:          NewIcons(),
+		icons:           NewIcons(),
 		selectedFileIdx: -1,
+		projStatuses:    make(map[string]ProjectStatus),
 	}
+	a.graph3dView = NewGraph3DView(a)
 
 	if target != "" {
 		a.repoName = filepath.Base(target)
@@ -184,6 +196,8 @@ func NewApp(initialPath string) *App {
 			a.projects = cfgMgr.GetConfig().Projects
 		}
 	}
+
+	go a.updateProjectStatuses()
 
 	return a
 }
@@ -309,6 +323,59 @@ func (a *App) loadData() {
 				a.fileChipClicks = make([]widget.Clickable, len(detail.Files))
 				a.fileItemClicks = make([]widget.Clickable, len(detail.Files))
 			}
+		}
+	}
+
+	go a.updateProjectStatuses()
+	if a.activeTab == "graph3d" {
+		go a.loadGraph3D()
+	}
+}
+
+func (a *App) updateProjectStatuses() {
+	a.mu.Lock()
+	projs := make([]models.Project, len(a.projects))
+	copy(projs, a.projects)
+	a.mu.Unlock()
+
+	for _, p := range projs {
+		if p.Path == "" {
+			continue
+		}
+		hasUncommitted, hasRecent, lastDate, err := a.gitSvc.GetProjectStatus(p.Path)
+		if err == nil {
+			a.mu.Lock()
+			if a.projStatuses == nil {
+				a.projStatuses = make(map[string]ProjectStatus)
+			}
+			a.projStatuses[p.Path] = ProjectStatus{
+				HasUncommitted: hasUncommitted,
+				HasRecent30d:   hasRecent,
+				LastCommitDate: lastDate,
+			}
+			a.mu.Unlock()
+		}
+	}
+
+	if a.window != nil {
+		a.window.Invalidate()
+	}
+}
+
+func (a *App) loadGraph3D() {
+	a.mu.Lock()
+	repo := a.activeRepo
+	a.mu.Unlock()
+	if repo == "" {
+		return
+	}
+	data, err := a.gitSvc.GetGraph3D(repo, 120)
+	if err == nil {
+		a.mu.Lock()
+		a.graph3dData = data
+		a.mu.Unlock()
+		if a.window != nil {
+			a.window.Invalidate()
 		}
 	}
 }
@@ -549,6 +616,10 @@ func (a *App) handleEvents(gtx layout.Context) {
 		a.mu.Lock()
 		a.reloadUpdatesLocked()
 		a.mu.Unlock()
+	}
+	if a.btnTab3DGraph.Clicked(gtx) {
+		a.activeTab = "graph3d"
+		go a.loadGraph3D()
 	}
 
 	// Switch Projects
@@ -842,13 +913,12 @@ func (a *App) handleEvents(gtx layout.Context) {
 		}
 	}
 
-	// Timeline clicks
+	// Timeline clicks (stay inside updates tab without jumping to commits tab)
 	if a.updatesData != nil {
 		for i := range a.timelineClicks {
 			if i < len(a.updatesData.Commits) && a.timelineClicks[i].Clicked(gtx) {
 				hash := a.updatesData.Commits[i].Hash
 				a.selectedHash = hash
-				a.activeTab = "commits"
 				go a.loadCommitDetail(hash)
 				break
 			}
@@ -865,6 +935,24 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 
 	if a.activeRepo == "" {
 		return a.layoutEmptyState(gtx, pal)
+	}
+
+	if a.activeTab == "graph3d" {
+		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+			// Panel 1: Left Navigation Sidebar
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				gtx.Constraints.Min.X = gtx.Dp(unit.Dp(265))
+				gtx.Constraints.Max.X = gtx.Dp(unit.Dp(265))
+				return a.layoutLeftSidebar(gtx, pal)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return drawVerticalDivider(gtx, pal.Border)
+			}),
+			// Panel 2: 3D Topology Canvas
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return a.graph3dView.Layout(gtx, a.graph3dData, pal)
+			}),
+		)
 	}
 
 	// Professional 3-Panel Architecture:
@@ -909,6 +997,7 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 	activeBranch := a.activeBranch
 	rootPath := a.rootPath
 	renamingID := a.renamingProjID
+	projStatuses := a.projStatuses
 	a.mu.Unlock()
 
 	searchProj := strings.ToLower(strings.TrimSpace(a.searchProjectsEditor.Text()))
@@ -949,6 +1038,10 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 				layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return a.drawNavRow(gtx, &a.btnTabUpdates, "Activity & Updates", a.activeTab == "updates", pal)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.drawNavRow(gtx, &a.btnTab3DGraph, "3D Topology Graph", a.activeTab == "graph3d", pal)
 				}),
 				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -991,6 +1084,7 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 						}
 
 						isActive := p.Path == rootPath
+						st := projStatuses[p.Path]
 
 						// If currently renaming this project
 						if p.ID == renamingID {
@@ -1020,10 +1114,8 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 
 						return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 							bg := pal.HeaderBg
-							fg := pal.Text
 							if isActive {
 								bg = pal.Selected
-								fg = pal.Accent
 							} else if click.Hovered() {
 								bg = pal.Hover
 							}
@@ -1038,18 +1130,43 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 													if isActive {
 														iconCol = pal.Accent
 													}
+													if st.HasUncommitted {
+														iconCol = pal.AddText
+													} else if st.HasRecent30d {
+														if !isActive {
+															iconCol = pal.Accent
+														}
+													} else {
+														iconCol = pal.TextMuted
+													}
 													return a.icons.Layout(gtx, a.icons.Folder, iconCol, unit.Dp(13))
 												}),
 												layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
 												layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 													lbl := material.Label(a.theme, unit.Sp(11), p.Name)
-													lbl.Color = fg
 													if isActive {
+														lbl.Color = pal.Accent
 														lbl.Font.Weight = font.Bold
-													} else {
+													} else if st.HasUncommitted {
+														lbl.Color = pal.Text
+														lbl.Font.Weight = font.SemiBold
+													} else if st.HasRecent30d {
+														lbl.Color = pal.Text
 														lbl.Font.Weight = font.Medium
+													} else {
+														lbl.Color = pal.TextMuted
+														lbl.Font.Weight = font.Normal
 													}
 													return lbl.Layout(gtx)
+												}),
+												// Uncommitted changes badge
+												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+													if st.HasUncommitted {
+														return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+															return a.drawTag(gtx, "MOD", pal.AddBg, pal.AddText)
+														})
+													}
+													return layout.Dimensions{}
 												}),
 												// Rename button [Edit]
 												layout.Rigid(func(gtx layout.Context) layout.Dimensions {

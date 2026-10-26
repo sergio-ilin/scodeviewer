@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"gioui.org/app"
 	"gioui.org/font"
 	"gioui.org/font/gofont"
+	"gioui.org/io/clipboard"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -95,10 +97,14 @@ type App struct {
 	commitsList     widget.List
 	commitClicks    []widget.Clickable
 	commitPinBtns   []widget.Clickable
+	commitCopyBtns  []widget.Clickable
 
 	// UI Widgets - Right Panel
 	btnPinSelected    widget.Clickable
+	btnCopyDetailHash widget.Clickable
 	mergedClicks      []widget.Clickable
+	mergedCopyBtns    []widget.Clickable
+	copiedHash        string
 	diffList          widget.List
 	searchFilesEditor widget.Editor
 	btnCollapseAll    widget.Clickable
@@ -289,6 +295,7 @@ func (a *App) loadData() {
 					}
 				}
 				a.mergedClicks = make([]widget.Clickable, len(detail.MergedCommits))
+				a.mergedCopyBtns = make([]widget.Clickable, len(detail.MergedCommits))
 				a.fileHeaderClicks = make([]widget.Clickable, len(detail.Files))
 				a.fileChipClicks = make([]widget.Clickable, len(detail.Files))
 			}
@@ -383,6 +390,7 @@ func (a *App) reloadCommitsLocked() {
 		a.commits = filtered
 		a.commitClicks = make([]widget.Clickable, len(filtered))
 		a.commitPinBtns = make([]widget.Clickable, len(filtered))
+		a.commitCopyBtns = make([]widget.Clickable, len(filtered))
 
 		// Auto select first commit if none or current selected is not in filtered
 		foundSelected := false
@@ -406,6 +414,7 @@ func (a *App) reloadCommitsLocked() {
 					a.selectedDetail = detail
 					a.selectedDetail.IsPinned = pinnedCommitMap[detail.Hash] || pinnedCommitMap[detail.ShortHash]
 					a.mergedClicks = make([]widget.Clickable, len(detail.MergedCommits))
+					a.mergedCopyBtns = make([]widget.Clickable, len(detail.MergedCommits))
 					a.fileHeaderClicks = make([]widget.Clickable, len(detail.Files))
 					a.fileChipClicks = make([]widget.Clickable, len(detail.Files))
 				}
@@ -470,6 +479,7 @@ func (a *App) loadCommitDetail(hash string) {
 			}
 		}
 		a.mergedClicks = make([]widget.Clickable, len(detail.MergedCommits))
+		a.mergedCopyBtns = make([]widget.Clickable, len(detail.MergedCommits))
 		a.fileHeaderClicks = make([]widget.Clickable, len(detail.Files))
 		a.fileChipClicks = make([]widget.Clickable, len(detail.Files))
 		a.mu.Unlock()
@@ -724,6 +734,41 @@ func (a *App) handleEvents(gtx layout.Context) {
 				break
 			}
 		}
+		for i := range a.mergedCopyBtns {
+			if i < len(a.selectedDetail.MergedCommits) && a.mergedCopyBtns[i].Clicked(gtx) {
+				h := a.selectedDetail.MergedCommits[i].Hash
+				gtx.Execute(clipboard.WriteCmd{
+					Type: "application/text",
+					Data: io.NopCloser(strings.NewReader(h)),
+				})
+				a.copiedHash = a.selectedDetail.MergedCommits[i].ShortHash
+				break
+			}
+		}
+	}
+
+	// Commit hash copy clicks
+	for i := range a.commitCopyBtns {
+		if i < len(a.commits) && a.commitCopyBtns[i].Clicked(gtx) {
+			c := a.commits[i]
+			if c.Hash != "UNCOMMITTED" {
+				gtx.Execute(clipboard.WriteCmd{
+					Type: "application/text",
+					Data: io.NopCloser(strings.NewReader(c.Hash)),
+				})
+				a.copiedHash = c.ShortHash
+			}
+			break
+		}
+	}
+
+	// Copy detail commit hash click
+	if a.btnCopyDetailHash.Clicked(gtx) && a.selectedDetail != nil && a.selectedDetail.Hash != "UNCOMMITTED" {
+		gtx.Execute(clipboard.WriteCmd{
+			Type: "application/text",
+			Data: io.NopCloser(strings.NewReader(a.selectedDetail.Hash)),
+		})
+		a.copiedHash = a.selectedDetail.ShortHash
 	}
 
 	// Diff file collapse / expand all
@@ -1419,15 +1464,32 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 														}),
 														layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
 														layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-															lbl := material.Label(a.theme, unit.Sp(10.5), fmt.Sprintf("+%d -%d", c.Additions, c.Deletions))
+															stats := formatDiffStats(c.Additions, c.Deletions)
+															if stats == "" {
+																return layout.Dimensions{}
+															}
+															lbl := material.Label(a.theme, unit.Sp(10.5), stats)
 															lbl.Color = pal.TextMuted
 															return lbl.Layout(gtx)
 														}),
-														layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
 														layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-															lbl := material.Label(a.theme, unit.Sp(10.5), c.ShortHash)
-															lbl.Color = pal.TextMuted
-															return lbl.Layout(gtx)
+															if isUncommitted {
+																return layout.Dimensions{}
+															}
+															var copyBtn *widget.Clickable
+															for origIdx, origC := range commits {
+																if origC.Hash == c.Hash && origIdx < len(a.commitCopyBtns) {
+																	copyBtn = &a.commitCopyBtns[origIdx]
+																	break
+																}
+															}
+															if copyBtn == nil {
+																copyBtn = new(widget.Clickable)
+															}
+															isCopied := a.copiedHash == c.ShortHash
+															return layout.Inset{Left: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+																return a.drawCopyBadge(gtx, copyBtn, c.Hash, c.ShortHash, isCopied, pal)
+															})
 														}),
 													)
 												}),
@@ -1683,17 +1745,30 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 							if isUncommitted {
 								dateStr = "Current working directory"
 							}
-							meta := fmt.Sprintf("%s  •  %s  •  %s  •  Files: %d  •  +%d -%d",
-								detail.AuthorName,
-								dateStr,
-								detail.ShortHash,
-								len(detail.Files),
-								detail.Additions,
-								detail.Deletions,
+							return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									meta := fmt.Sprintf("%s  •  %s", detail.AuthorName, dateStr)
+									if len(detail.Files) > 0 {
+										meta += fmt.Sprintf("  •  Files: %d", len(detail.Files))
+									}
+									stats := formatDiffStats(detail.Additions, detail.Deletions)
+									if stats != "" {
+										meta += "  •  " + stats
+									}
+									lbl := material.Label(a.theme, unit.Sp(11), meta)
+									lbl.Color = pal.TextMuted
+									return lbl.Layout(gtx)
+								}),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									if isUncommitted {
+										return layout.Dimensions{}
+									}
+									isCopied := a.copiedHash == detail.ShortHash
+									return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+										return a.drawCopyBadge(gtx, &a.btnCopyDetailHash, detail.Hash, detail.ShortHash, isCopied, pal)
+									})
+								}),
 							)
-							lbl := material.Label(a.theme, unit.Sp(11), meta)
-							lbl.Color = pal.TextMuted
-							return lbl.Layout(gtx)
 						}),
 					)
 				})
@@ -1800,11 +1875,19 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 														}
 														return lbl.Layout(gtx)
 													}),
-													layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 													layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-														lbl := material.Label(a.theme, unit.Sp(9), fmt.Sprintf("+%d -%d", f.Additions, f.Deletions))
-														lbl.Color = pal.TextMuted
-														return lbl.Layout(gtx)
+														stats := formatDiffStats(f.Additions, f.Deletions)
+														if stats == "" {
+															return layout.Dimensions{}
+														}
+														return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+															layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+															layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+																lbl := material.Label(a.theme, unit.Sp(9), stats)
+																lbl.Color = pal.TextMuted
+																return lbl.Layout(gtx)
+															}),
+														)
 													}),
 												)
 											})
@@ -1954,11 +2037,19 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 												lbl.Color = pal.TextMuted
 												return lbl.Layout(gtx)
 											}),
-											layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Label(a.theme, unit.Sp(10.5), fmt.Sprintf("+%d -%d", it.adds, it.dels))
-												lbl.Color = pal.TextMuted
-												return lbl.Layout(gtx)
+												stats := formatDiffStats(it.adds, it.dels)
+												if stats == "" {
+													return layout.Dimensions{}
+												}
+												return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+													layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+													layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+														lbl := material.Label(a.theme, unit.Sp(10.5), stats)
+														lbl.Color = pal.TextMuted
+														return lbl.Layout(gtx)
+													}),
+												)
 											}),
 										)
 									})
@@ -2079,10 +2170,14 @@ func (a *App) drawMergedCommitItems(gtx layout.Context, merged []models.CommitSu
 					return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Label(a.theme, unit.Sp(10.5), commit.ShortHash)
-								lbl.Color = pal.Accent
-								lbl.Font.Weight = font.SemiBold
-								return lbl.Layout(gtx)
+								var copyBtn *widget.Clickable
+								if idx < len(a.mergedCopyBtns) {
+									copyBtn = &a.mergedCopyBtns[idx]
+								} else {
+									copyBtn = new(widget.Clickable)
+								}
+								isCopied := a.copiedHash == commit.ShortHash
+								return a.drawCopyBadge(gtx, copyBtn, commit.Hash, commit.ShortHash, isCopied, pal)
 							}),
 							layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -2097,7 +2192,11 @@ func (a *App) drawMergedCommitItems(gtx layout.Context, merged []models.CommitSu
 								return lbl.Layout(gtx)
 							}),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Label(a.theme, unit.Sp(10), fmt.Sprintf("+%d -%d", commit.Additions, commit.Deletions))
+								stats := formatDiffStats(commit.Additions, commit.Deletions)
+								if stats == "" {
+									return layout.Dimensions{}
+								}
+								lbl := material.Label(a.theme, unit.Sp(10), stats)
 								lbl.Color = pal.TextMuted
 								return lbl.Layout(gtx)
 							}),
@@ -2260,6 +2359,64 @@ func (a *App) createListStyle(state *widget.List, pal Palette) material.ListStyl
 		ls.Indicator.HoverColor = pal.Accent
 	}
 	return ls
+}
+
+func formatDiffStats(adds, dels int) string {
+	if adds == 0 && dels == 0 {
+		return ""
+	}
+	if adds > 0 && dels == 0 {
+		return fmt.Sprintf("+%d", adds)
+	}
+	if adds == 0 && dels > 0 {
+		return fmt.Sprintf("-%d", dels)
+	}
+	return fmt.Sprintf("+%d -%d", adds, dels)
+}
+
+func (a *App) drawCopyBadge(gtx layout.Context, btn *widget.Clickable, hashToCopy string, displayLabel string, isCopied bool, pal Palette) layout.Dimensions {
+	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		bg := pal.Surface
+		fg := pal.TextMuted
+		if isCopied {
+			bg = pal.Selected
+			fg = pal.Accent
+		} else if btn.Hovered() {
+			bg = pal.Hover
+			fg = pal.Text
+		}
+
+		return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2), Left: unit.Dp(5), Right: unit.Dp(5)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						text := displayLabel
+						if isCopied {
+							text = "Copied! ✓"
+						}
+						lbl := material.Label(a.theme, unit.Sp(10), text)
+						if isCopied {
+							lbl.Font.Weight = font.Bold
+							lbl.Color = pal.Accent
+						} else {
+							lbl.Color = fg
+						}
+						return lbl.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if isCopied {
+							return layout.Dimensions{}
+						}
+						return layout.Inset{Left: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Label(a.theme, unit.Sp(8.5), "📋")
+							lbl.Color = pal.TextMuted
+							return lbl.Layout(gtx)
+						})
+					}),
+				)
+			})
+		})
+	})
 }
 
 func (a *App) drawSectionHeader(gtx layout.Context, title string, pal Palette) layout.Dimensions {

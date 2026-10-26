@@ -113,26 +113,10 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 		gtx.Execute(op.InvalidateCmd{})
 	}
 
-	return layout.Stack{}.Layout(gtx,
-		// Background & 3D Render Canvas
-		layout.Expanded(func(gtx layout.Context) layout.Dimensions {
-			// Canvas background
-			paint.FillShape(gtx.Ops, pal.Bg, clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Op())
-
-			// Register pointer hit area (entire canvas area)
-			area := clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Push(gtx.Ops)
-			event.Op(gtx.Ops, g)
-
-			// Render the 3D Scene
-			g.render3DScene(gtx, data, pal)
-			area.Pop()
-			return layout.Dimensions{Size: gtx.Constraints.Max}
-		}),
-
-		// Top Controls Toolbar (Presets, Camera, Zoom)
-		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(14), Left: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				gtx.Constraints.Min.X = gtx.Constraints.Max.X
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		// 1. Top Controls Toolbar (Presets, Camera, Zoom)
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(6), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return drawWithBorder(gtx, pal.HeaderBg, unit.Dp(8), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
 					return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
@@ -204,55 +188,73 @@ func (g *Graph3DView) Layout(gtx layout.Context, data *git.Graph3DData, pal Pale
 			})
 		}),
 
-		// Instructions badge at bottom left
-		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-			if g.selectedHash != "" {
-				return layout.Dimensions{}
-			}
-			return layout.SW.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Bottom: unit.Dp(16), Left: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return drawWithBorder(gtx, pal.HeaderBg, unit.Dp(6), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
-						return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(8), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									lbl := material.Label(g.app.theme, unit.Sp(10.5), "Controls: ")
-									lbl.Font.Weight = font.Bold
-									lbl.Color = pal.Accent
-									return lbl.Layout(gtx)
-								}),
-								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									lbl := material.Label(g.app.theme, unit.Sp(10.5), "Left drag: Rotate  •  Right drag / Shift: Pan  •  Wheel: Zoom in/out  •  Click node to inspect")
-									lbl.Color = pal.Text
-									return lbl.Layout(gtx)
-								}),
-							)
+		// 2. Middle: Interactive 3D Viewport (Full area, no overlapping badges)
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return layout.Stack{}.Layout(gtx,
+				layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+					// Canvas background
+					paint.FillShape(gtx.Ops, pal.Bg, clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Op())
+
+					// Register pointer hit area (entire canvas area)
+					area := clip.Rect(image.Rect(0, 0, gtx.Constraints.Max.X, gtx.Constraints.Max.Y)).Push(gtx.Ops)
+					event.Op(gtx.Ops, g)
+
+					// Render the 3D Scene
+					g.render3DScene(gtx, data, pal)
+					area.Pop()
+					return layout.Dimensions{Size: gtx.Constraints.Max}
+				}),
+				// Floating Inspector Card docked on the right side if node selected
+				layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+					if g.selectedHash == "" {
+						return layout.Dimensions{}
+					}
+					var selNode *git.Graph3DNode
+					for i := range data.Nodes {
+						if data.Nodes[i].Hash == g.selectedHash {
+							selNode = &data.Nodes[i]
+							break
+						}
+					}
+					if selNode == nil {
+						return layout.Dimensions{}
+					}
+					return layout.NE.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{Top: unit.Dp(10), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							gtx.Constraints.Max.X = gtx.Dp(unit.Dp(360))
+							return g.renderInspectorCard(gtx, selNode, pal)
 						})
 					})
-				})
-			})
+				}),
+			)
 		}),
 
-		// Floating 3D Commit Inspector Card (when node selected)
-		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-			if g.selectedHash == "" {
-				return layout.Dimensions{}
-			}
-
-			var selNode *git.Graph3DNode
-			for i := range data.Nodes {
-				if data.Nodes[i].Hash == g.selectedHash {
-					selNode = &data.Nodes[i]
-					break
-				}
-			}
-			if selNode == nil {
-				return layout.Dimensions{}
-			}
-
-			return layout.SE.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Bottom: unit.Dp(16), Right: unit.Dp(16)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					gtx.Constraints.Max.X = gtx.Dp(unit.Dp(360))
-					return g.renderInspectorCard(gtx, selNode, pal)
+		// 3. Bottom Status Bar with controls hint and node count (NEVER overlaps canvas or toolbar!)
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(10), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return drawWithBorder(gtx, pal.HeaderBg, unit.Dp(6), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
+					return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(12), Right: unit.Dp(12)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Label(g.app.theme, unit.Sp(10), "Controls: ")
+								lbl.Font.Weight = font.Bold
+								lbl.Color = pal.Accent
+								return lbl.Layout(gtx)
+							}),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Label(g.app.theme, unit.Sp(10), "Left drag: Rotate  •  Right drag / Shift: Pan  •  Mouse wheel: Zoom in/out  •  Click node to inspect")
+								lbl.Color = pal.TextMuted
+								return lbl.Layout(gtx)
+							}),
+							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Label(g.app.theme, unit.Sp(10), fmt.Sprintf("%d Commits  •  %d Connections", len(data.Nodes), len(data.Edges)))
+								lbl.Color = pal.TextMuted
+								lbl.Font.Weight = font.Medium
+								return lbl.Layout(gtx)
+							}),
+						)
+					})
 				})
 			})
 		}),
@@ -294,10 +296,12 @@ func (g *Graph3DView) handlePointer(gtx layout.Context) {
 		g.autoRotate = !g.autoRotate
 	}
 	if g.btnZoomIn.Clicked(gtx) {
-		g.zoom = math.Min(5.0, g.zoom*1.2)
+		g.zoom = math.Min(6.0, g.zoom*1.2)
+		gtx.Execute(op.InvalidateCmd{})
 	}
 	if g.btnZoomOut.Clicked(gtx) {
-		g.zoom = math.Max(0.20, g.zoom*0.8)
+		g.zoom = math.Max(0.15, g.zoom*0.8)
+		gtx.Execute(op.InvalidateCmd{})
 	}
 
 	for {

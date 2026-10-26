@@ -100,6 +100,11 @@ type App struct {
 	commitCopyBtns  []widget.Clickable
 
 	// UI Widgets - Right Panel
+	icons             *Icons
+	selectedFileIdx   int
+	btnAllFiles       widget.Clickable
+	fileItemClicks    []widget.Clickable
+	filesListState    widget.List
 	btnPinSelected    widget.Clickable
 	btnCopyDetailHash widget.Clickable
 	mergedClicks      []widget.Clickable
@@ -162,11 +167,14 @@ func NewApp(initialPath string) *App {
 		projectsList:  widget.List{List: layout.List{Axis: layout.Vertical}},
 		branchesList:  widget.List{List: layout.List{Axis: layout.Vertical}},
 		subReposList:  widget.List{List: layout.List{Axis: layout.Vertical}},
-		commitsList:   widget.List{List: layout.List{Axis: layout.Vertical}},
-		diffList:      widget.List{List: layout.List{Axis: layout.Vertical}},
-		fileChipsList: widget.List{List: layout.List{Axis: layout.Horizontal}},
-		updatesList:   widget.List{List: layout.List{Axis: layout.Vertical}},
-		collapsedFiles: make(map[string]bool),
+		commitsList:    widget.List{List: layout.List{Axis: layout.Vertical}},
+		diffList:       widget.List{List: layout.List{Axis: layout.Vertical}},
+		fileChipsList:  widget.List{List: layout.List{Axis: layout.Horizontal}},
+		filesListState: widget.List{List: layout.List{Axis: layout.Vertical}},
+		updatesList:    widget.List{List: layout.List{Axis: layout.Vertical}},
+		collapsedFiles:  make(map[string]bool),
+		icons:          NewIcons(),
+		selectedFileIdx: -1,
 	}
 
 	if target != "" {
@@ -284,6 +292,7 @@ func (a *App) loadData() {
 			a.mergedClicks = nil
 			a.fileHeaderClicks = make([]widget.Clickable, len(a.uncommitted.Files))
 			a.fileChipClicks = make([]widget.Clickable, len(a.uncommitted.Files))
+			a.fileItemClicks = make([]widget.Clickable, len(a.uncommitted.Files))
 		} else {
 			detail, err := a.gitSvc.GetCommitDetail(a.activeRepo, a.selectedHash)
 			if err == nil {
@@ -298,6 +307,7 @@ func (a *App) loadData() {
 				a.mergedCopyBtns = make([]widget.Clickable, len(detail.MergedCommits))
 				a.fileHeaderClicks = make([]widget.Clickable, len(detail.Files))
 				a.fileChipClicks = make([]widget.Clickable, len(detail.Files))
+				a.fileItemClicks = make([]widget.Clickable, len(detail.Files))
 			}
 		}
 	}
@@ -408,6 +418,7 @@ func (a *App) reloadCommitsLocked() {
 				a.mergedClicks = nil
 				a.fileHeaderClicks = make([]widget.Clickable, len(a.uncommitted.Files))
 				a.fileChipClicks = make([]widget.Clickable, len(a.uncommitted.Files))
+				a.fileItemClicks = make([]widget.Clickable, len(a.uncommitted.Files))
 			} else {
 				detail, errDetail := a.gitSvc.GetCommitDetail(a.activeRepo, filtered[0].Hash)
 				if errDetail == nil {
@@ -417,6 +428,7 @@ func (a *App) reloadCommitsLocked() {
 					a.mergedCopyBtns = make([]widget.Clickable, len(detail.MergedCommits))
 					a.fileHeaderClicks = make([]widget.Clickable, len(detail.Files))
 					a.fileChipClicks = make([]widget.Clickable, len(detail.Files))
+					a.fileItemClicks = make([]widget.Clickable, len(detail.Files))
 				}
 			}
 		} else if len(filtered) == 0 {
@@ -482,6 +494,8 @@ func (a *App) loadCommitDetail(hash string) {
 		a.mergedCopyBtns = make([]widget.Clickable, len(detail.MergedCommits))
 		a.fileHeaderClicks = make([]widget.Clickable, len(detail.Files))
 		a.fileChipClicks = make([]widget.Clickable, len(detail.Files))
+		a.fileItemClicks = make([]widget.Clickable, len(detail.Files))
+		a.selectedFileIdx = -1 // Reset to all files
 		a.mu.Unlock()
 		if a.window != nil {
 			a.window.Invalidate()
@@ -771,6 +785,26 @@ func (a *App) handleEvents(gtx layout.Context) {
 		a.copiedHash = a.selectedDetail.ShortHash
 	}
 
+	// All files button in files sidebar
+	if a.btnAllFiles.Clicked(gtx) {
+		a.selectedFileIdx = -1
+	}
+
+	// Individual file selection from files sidebar
+	if a.selectedDetail != nil {
+		for i := range a.fileItemClicks {
+			if i < len(a.selectedDetail.Files) && a.fileItemClicks[i].Clicked(gtx) {
+				if a.selectedFileIdx == i {
+					a.selectedFileIdx = -1
+				} else {
+					a.selectedFileIdx = i
+					delete(a.collapsedFiles, a.selectedDetail.Files[i].NewPath)
+				}
+				break
+			}
+		}
+	}
+
 	// Diff file collapse / expand all
 	if a.btnCollapseAll.Clicked(gtx) && a.selectedDetail != nil {
 		if a.collapsedFiles == nil {
@@ -1010,18 +1044,26 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 										// Rename button [Edit]
 										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 											return btnRename.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Label(a.theme, unit.Sp(9), "edit")
-												lbl.Color = pal.TextMuted
-												return lbl.Layout(gtx)
+												col := pal.TextMuted
+												if btnRename.Hovered() {
+													col = pal.Text
+												}
+												return layout.UniformInset(unit.Dp(2)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+													return a.icons.Layout(gtx, a.icons.Edit, col, unit.Dp(11))
+												})
 											})
 										}),
 										layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
-										// Delete button [x]
+										// Delete button [Delete]
 										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 											return btnDelete.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Label(a.theme, unit.Sp(10), "✕")
-												lbl.Color = pal.TextMuted
-												return lbl.Layout(gtx)
+												col := pal.TextMuted
+												if btnDelete.Hovered() {
+													col = pal.DelText
+												}
+												return layout.UniformInset(unit.Dp(2)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+													return a.icons.Layout(gtx, a.icons.Delete, col, unit.Dp(11))
+												})
 											})
 										}),
 									)
@@ -1144,21 +1186,34 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 											return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 												// Row 1: Branch name with active indicator & pin indicator
 												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-													prefix := "  "
-													if b.IsPinned {
-														prefix = "📌 "
-													} else if b.IsCurrent {
-														prefix = "● "
-													}
-													lbl := material.Label(a.theme, unit.Sp(11), prefix+b.Name)
-													if isActive {
-														lbl.Font.Weight = font.Bold
-														lbl.Color = pal.Accent
-													} else {
-														lbl.Font.Weight = font.Medium
-														lbl.Color = pal.Text
-													}
-													return lbl.Layout(gtx)
+													return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+														layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+															if b.IsPinned {
+																return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+																	return a.icons.Layout(gtx, a.icons.Paperclip, pal.Accent, unit.Dp(11))
+																})
+															}
+															if b.IsCurrent {
+																return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+																	lbl := material.Label(a.theme, unit.Sp(10), "●")
+																	lbl.Color = pal.Accent
+																	return lbl.Layout(gtx)
+																})
+															}
+															return layout.Spacer{Width: unit.Dp(6)}.Layout(gtx)
+														}),
+														layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+															lbl := material.Label(a.theme, unit.Sp(11), b.Name)
+															if isActive {
+																lbl.Font.Weight = font.Bold
+																lbl.Color = pal.Accent
+															} else {
+																lbl.Font.Weight = font.Medium
+																lbl.Color = pal.Text
+															}
+															return lbl.Layout(gtx)
+														}),
+													)
 												}),
 												// Row 2: Author and Last Update Time!
 												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -1179,19 +1234,17 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 											)
 										})
 									}),
-									// Pin button
+									// Pin button (paperclip icon)
 									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-										pinLabel := "pin"
 										pinCol := pal.TextMuted
 										if b.IsPinned {
-											pinLabel = "unpin"
 											pinCol = pal.Accent
+										} else if pinBtn.Hovered() {
+											pinCol = pal.Text
 										}
 										return pinBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 											return layout.Inset{Left: unit.Dp(4), Right: unit.Dp(2), Top: unit.Dp(2), Bottom: unit.Dp(2)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Label(a.theme, unit.Sp(9), pinLabel)
-												lbl.Color = pinCol
-												return lbl.Layout(gtx)
+												return a.icons.Layout(gtx, a.icons.Paperclip, pinCol, unit.Dp(13))
 											})
 										})
 									}),
@@ -1394,18 +1447,26 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 												layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 													return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 														layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-															prefix := ""
-															if c.IsPinned {
-																prefix = "📌 "
-															}
-															lbl := material.Label(a.theme, unit.Sp(11), prefix+c.AuthorName)
-															lbl.Font.Weight = font.SemiBold
-															if isUncommitted {
-																lbl.Color = pal.AddText
-															} else {
-																lbl.Color = pal.Text
-															}
-															return lbl.Layout(gtx)
+															return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+																layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+																	if c.IsPinned {
+																		return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+																			return a.icons.Layout(gtx, a.icons.Paperclip, pal.Accent, unit.Dp(11))
+																		})
+																	}
+																	return layout.Dimensions{}
+																}),
+																layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+																	lbl := material.Label(a.theme, unit.Sp(11), c.AuthorName)
+																	lbl.Font.Weight = font.SemiBold
+																	if isUncommitted {
+																		lbl.Color = pal.AddText
+																	} else {
+																		lbl.Color = pal.Text
+																	}
+																	return lbl.Layout(gtx)
+																}),
+															)
 														}),
 														layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 														layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
@@ -1496,22 +1557,20 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 											)
 										})
 									}),
-									// Pin button
+									// Pin button (paperclip vector icon)
 									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 										if isUncommitted {
 											return layout.Dimensions{}
 										}
-										pinLabel := "pin"
 										pinCol := pal.TextMuted
 										if c.IsPinned {
-											pinLabel = "unpin"
 											pinCol = pal.Accent
+										} else if pinBtn.Hovered() {
+											pinCol = pal.Text
 										}
 										return pinBtn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 											return layout.Inset{Left: unit.Dp(6), Right: unit.Dp(2), Top: unit.Dp(4), Bottom: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Label(a.theme, unit.Sp(9.5), pinLabel)
-												lbl.Color = pinCol
-												return lbl.Layout(gtx)
+												return a.icons.Layout(gtx, a.icons.Paperclip, pinCol, unit.Dp(13))
 											})
 										})
 									}),
@@ -1734,7 +1793,7 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 									if detail.IsPinned {
 										pinText = "Pinned"
 									}
-									return a.drawPillButton(gtx, &a.btnPinSelected, pinText, detail.IsPinned, pal)
+									return a.drawIconPillButton(gtx, &a.btnPinSelected, a.icons.Paperclip, pinText, detail.IsPinned, pal)
 								}),
 							)
 						}),
@@ -1784,275 +1843,226 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 			}
 			return layout.Dimensions{}
 		}),
-		// FILES CHANGED TOOLBAR & QUICK NAVIGATION
+		// MAIN REVIEW WORKSPACE: Files sidebar + Diff document cards
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return a.layoutReviewWorkspace(gtx, detail, pal)
+		}),
+	)
+}
+
+// Review workspace containing changed files sidebar on the left and diff documents on the right
+func (a *App) layoutReviewWorkspace(gtx layout.Context, detail *models.CommitDetail, pal Palette) layout.Dimensions {
+	if len(detail.Files) == 0 {
+		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			lbl := material.Label(a.theme, unit.Sp(12), "No changed files in this commit")
+			lbl.Color = pal.TextMuted
+			return lbl.Layout(gtx)
+		})
+	}
+
+	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+		// Left: Dedicated Changed Files Sidebar
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			if len(detail.Files) == 0 {
-				return layout.Dimensions{}
-			}
-			return drawWithBg(gtx, pal.HeaderBg, func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-						// Row 1: Section title, Search Box, Collapse All, Expand All
+			w := gtx.Dp(unit.Dp(260))
+			gtx.Constraints.Min.X = w
+			gtx.Constraints.Max.X = w
+			return a.layoutChangedFilesSidebar(gtx, detail, pal)
+		}),
+		// Vertical separator line
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return drawVerticalDivider(gtx, pal.Border)
+		}),
+		// Right: Spacious Diff Document Cards
+		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			return a.layoutDiffDocumentCards(gtx, detail, pal)
+		}),
+	)
+}
+
+func (a *App) layoutChangedFilesSidebar(gtx layout.Context, detail *models.CommitDetail, pal Palette) layout.Dimensions {
+	if len(a.fileItemClicks) < len(detail.Files) {
+		a.fileItemClicks = make([]widget.Clickable, len(detail.Files))
+	}
+
+	searchFile := strings.ToLower(strings.TrimSpace(a.searchFilesEditor.Text()))
+	var matched []int
+	for i, f := range detail.Files {
+		if searchFile != "" && !strings.Contains(strings.ToLower(f.NewPath), searchFile) && !strings.Contains(strings.ToLower(f.OldPath), searchFile) {
+			continue
+		}
+		matched = append(matched, i)
+	}
+
+	return drawWithBg(gtx, pal.HeaderBg, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			// Section Header & Quick Collapse/Expand Controls
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: unit.Dp(8), Bottom: unit.Dp(6), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									title := fmt.Sprintf("FILES CHANGED (%d)", len(detail.Files))
-									lbl := material.Label(a.theme, unit.Sp(11), title)
-									lbl.Font.Weight = font.Bold
-									lbl.Color = pal.Text
-									return lbl.Layout(gtx)
-								}),
-								layout.Rigid(layout.Spacer{Width: unit.Dp(12)}.Layout),
-								layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-									ed := material.Editor(a.theme, &a.searchFilesEditor, "Filter files (e.g. .go, models)...")
-									ed.TextSize = unit.Sp(10.5)
-									ed.Color = pal.Text
-									ed.HintColor = pal.TextMuted
-									return drawWithBg(gtx, pal.Bg, func(gtx layout.Context) layout.Dimensions {
-										return layout.UniformInset(unit.Dp(4)).Layout(gtx, ed.Layout)
-									})
-								}),
-								layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
-								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									return a.drawPillButton(gtx, &a.btnCollapseAll, "Collapse All", false, pal)
-								}),
-								layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-									return a.drawPillButton(gtx, &a.btnExpandAll, "Expand All", false, pal)
-								}),
-							)
+							title := fmt.Sprintf("FILES (%d)", len(detail.Files))
+							lbl := material.Label(a.theme, unit.Sp(10.5), title)
+							lbl.Font.Weight = font.Bold
+							lbl.Color = pal.TextMuted
+							return lbl.Layout(gtx)
 						}),
-						// Row 2: File Chips List (Scrollable horizontally)
-						layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							searchFile := strings.ToLower(strings.TrimSpace(a.searchFilesEditor.Text()))
-							var matched []int
-							for i, f := range detail.Files {
-								if searchFile != "" && !strings.Contains(strings.ToLower(f.NewPath), searchFile) && !strings.Contains(strings.ToLower(f.OldPath), searchFile) {
-									continue
-								}
-								matched = append(matched, i)
-							}
-
-							return a.createListStyle(&a.fileChipsList, pal).Layout(gtx, len(matched), func(gtx layout.Context, mIdx int) layout.Dimensions {
-								origIdx := matched[mIdx]
-								f := detail.Files[origIdx]
-								isCollapsed := a.collapsedFiles[f.NewPath]
-
-								var chipClick *widget.Clickable
-								if origIdx < len(a.fileChipClicks) {
-									chipClick = &a.fileChipClicks[origIdx]
-								} else {
-									chipClick = new(widget.Clickable)
-								}
-
-								return chipClick.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-									bg := pal.Surface
-									if chipClick.Hovered() {
-										bg = pal.Hover
-									}
-									return layout.Inset{Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-										return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
-											return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-												return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-													layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-														arrow := "▼"
-														if isCollapsed {
-															arrow = "▶"
-														}
-														lbl := material.Label(a.theme, unit.Sp(9.5), arrow+" ")
-														lbl.Color = pal.Accent
-														return lbl.Layout(gtx)
-													}),
-													layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-														shortPath := filepath.Base(f.NewPath)
-														lbl := material.Label(a.theme, unit.Sp(10), shortPath)
-														if isCollapsed {
-															lbl.Color = pal.TextMuted
-														} else {
-															lbl.Color = pal.Text
-															lbl.Font.Weight = font.Medium
-														}
-														return lbl.Layout(gtx)
-													}),
-													layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-														stats := formatDiffStats(f.Additions, f.Deletions)
-														if stats == "" {
-															return layout.Dimensions{}
-														}
-														return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-															layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
-															layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-																lbl := material.Label(a.theme, unit.Sp(9), stats)
-																lbl.Color = pal.TextMuted
-																return lbl.Layout(gtx)
-															}),
-														)
-													}),
-												)
-											})
-										})
-									})
-								})
-							})
+							return a.drawIconPillButton(gtx, &a.btnCollapseAll, a.icons.ExpandLess, "", false, pal)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawIconPillButton(gtx, &a.btnExpandAll, a.icons.ExpandMore, "", false, pal)
 						}),
 					)
 				})
-			})
-		}),
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return drawDivider(gtx, pal.Border)
-		}),
-		// Diff files list
-		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			if len(detail.Files) == 0 {
-				return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.theme, unit.Sp(12), "No changed files in this commit")
-					lbl.Color = pal.TextMuted
-					return lbl.Layout(gtx)
+			}),
+			// File Search Filter Input
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8), Bottom: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					ed := material.Editor(a.theme, &a.searchFilesEditor, "Filter files (path or name)...")
+					ed.TextSize = unit.Sp(10.5)
+					ed.Color = pal.Text
+					ed.HintColor = pal.TextMuted
+					return drawWithBg(gtx, pal.Bg, func(gtx layout.Context) layout.Dimensions {
+						return layout.UniformInset(unit.Dp(5)).Layout(gtx, ed.Layout)
+					})
 				})
-			}
-
-			if len(a.fileHeaderClicks) < len(detail.Files) {
-				a.fileHeaderClicks = make([]widget.Clickable, len(detail.Files))
-				a.fileChipClicks = make([]widget.Clickable, len(detail.Files))
-			}
-			if a.collapsedFiles == nil {
-				a.collapsedFiles = make(map[string]bool)
-			}
-
-			type diffItem struct {
-				isFileHeader bool
-				isHunk       bool
-				isCollapsed  bool
-				fileOrigIdx  int
-				filePath     string
-				status       string
-				adds, dels   int
-				hunkHeader   string
-				line         models.DiffLine
-			}
-
-			searchFile := strings.ToLower(strings.TrimSpace(a.searchFilesEditor.Text()))
-
-			var items []diffItem
-			for origIdx, f := range detail.Files {
-				if searchFile != "" && !strings.Contains(strings.ToLower(f.NewPath), searchFile) && !strings.Contains(strings.ToLower(f.OldPath), searchFile) {
-					continue
+			}),
+			// "View All Files" Shortcut Button
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Left: unit.Dp(8), Right: unit.Dp(8), Bottom: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					allActive := (a.selectedFileIdx == -1)
+					txt := fmt.Sprintf("All Files (%d)", len(detail.Files))
+					return a.drawIconPillButton(gtx, &a.btnAllFiles, a.icons.Folder, txt, allActive, pal)
+				})
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return drawDivider(gtx, pal.Border)
+			}),
+			// Scrollable Files List
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				if len(matched) == 0 {
+					return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Label(a.theme, unit.Sp(11), "No matching files")
+						lbl.Color = pal.TextMuted
+						return lbl.Layout(gtx)
+					})
 				}
 
-				isCollapsed := a.collapsedFiles[f.NewPath]
+				return a.createListStyle(&a.filesListState, pal).Layout(gtx, len(matched), func(gtx layout.Context, mIdx int) layout.Dimensions {
+					origIdx := matched[mIdx]
+					f := detail.Files[origIdx]
+					isSelected := (a.selectedFileIdx == origIdx)
 
-				items = append(items, diffItem{
-					isFileHeader: true,
-					isCollapsed:  isCollapsed,
-					fileOrigIdx:  origIdx,
-					filePath:     f.NewPath,
-					status:       f.Status,
-					adds:         f.Additions,
-					dels:         f.Deletions,
-				})
-
-				if !isCollapsed {
-					for _, h := range f.Hunks {
-						items = append(items, diffItem{
-							isHunk:     true,
-							hunkHeader: h.Header,
-						})
-						for _, l := range h.Lines {
-							items = append(items, diffItem{
-								line: l,
-							})
-						}
+					filePath := filepath.ToSlash(f.NewPath)
+					dir := filepath.Dir(filePath)
+					if dir == "." || dir == "/" {
+						dir = ""
+					} else {
+						dir = dir + "/"
 					}
-				}
-			}
+					fileName := filepath.Base(filePath)
 
-			if len(items) == 0 {
-				return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.theme, unit.Sp(12), "No files matching filter")
-					lbl.Color = pal.TextMuted
-					return lbl.Layout(gtx)
-				})
-			}
-
-			return a.createListStyle(&a.diffList, pal).Layout(gtx, len(items), func(gtx layout.Context, idx int) layout.Dimensions {
-				it := items[idx]
-
-				if it.isFileHeader {
 					var click *widget.Clickable
-					if it.fileOrigIdx < len(a.fileHeaderClicks) {
-						click = &a.fileHeaderClicks[it.fileOrigIdx]
+					if origIdx < len(a.fileItemClicks) {
+						click = &a.fileItemClicks[origIdx]
 					} else {
 						click = new(widget.Clickable)
 					}
 
 					return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 						bg := pal.Surface
-						if click.Hovered() {
+						if isSelected {
+							bg = pal.Selected
+						} else if click.Hovered() {
 							bg = pal.Hover
 						}
+
 						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-							layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 								return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
-									return layout.Inset{Top: unit.Dp(7), Bottom: unit.Dp(7), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-										return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												arrow := "▼"
-												if it.isCollapsed {
-													arrow = "▶"
-												}
-												lbl := material.Label(a.theme, unit.Sp(11), arrow+" ")
-												lbl.Font.Weight = font.Bold
-												lbl.Color = pal.Accent
-												return lbl.Layout(gtx)
-											}),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												lbl := material.Label(a.theme, unit.Sp(11.5), it.filePath)
-												lbl.Font.Weight = font.SemiBold
-												lbl.Color = pal.Text
-												return lbl.Layout(gtx)
-											}),
-											layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												tagColor := pal.BadgeBg
-												tagText := pal.BadgeText
-												switch strings.ToLower(it.status) {
-												case "added":
-													tagColor = pal.AddBg
-													tagText = pal.AddText
-												case "deleted":
-													tagColor = pal.DelBg
-													tagText = pal.DelText
-												}
-												return a.drawTag(gtx, strings.ToUpper(it.status), tagColor, tagText)
-											}),
-											layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												if !it.isCollapsed {
-													return layout.Dimensions{}
-												}
-												lbl := material.Label(a.theme, unit.Sp(10), "collapsed")
-												lbl.Color = pal.TextMuted
-												return lbl.Layout(gtx)
-											}),
-											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-												stats := formatDiffStats(it.adds, it.dels)
-												if stats == "" {
-													return layout.Dimensions{}
-												}
-												return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-													layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+									return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+										// Active indicator bar
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											if !isSelected {
+												return layout.Dimensions{}
+											}
+											return drawWithBg(gtx, pal.Accent, func(gtx layout.Context) layout.Dimensions {
+												return layout.Dimensions{Size: image.Pt(gtx.Dp(unit.Dp(3)), gtx.Dp(unit.Dp(36)))}
+											})
+										}),
+										layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+											return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+												return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+													// Directory path line (if present)
 													layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-														lbl := material.Label(a.theme, unit.Sp(10.5), stats)
+														if dir == "" {
+															return layout.Dimensions{}
+														}
+														lbl := material.Label(a.theme, unit.Sp(9.5), dir)
 														lbl.Color = pal.TextMuted
 														return lbl.Layout(gtx)
 													}),
+													// File name row with vector icon, status badge, and diff stats
+													layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+														return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+															layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+																iconCol := pal.TextMuted
+																if isSelected {
+																	iconCol = pal.Accent
+																}
+																return a.icons.Layout(gtx, a.icons.File, iconCol, unit.Dp(12))
+															}),
+															layout.Rigid(layout.Spacer{Width: unit.Dp(5)}.Layout),
+															layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+																lbl := material.Label(a.theme, unit.Sp(11), fileName)
+																if isSelected {
+																	lbl.Font.Weight = font.Bold
+																	lbl.Color = pal.Text
+																} else {
+																	lbl.Font.Weight = font.Medium
+																	lbl.Color = pal.Text
+																}
+																return lbl.Layout(gtx)
+															}),
+															layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+															layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+																tagBg := pal.BadgeBg
+																tagFg := pal.BadgeText
+																tagText := "M"
+																switch strings.ToLower(f.Status) {
+																case "added":
+																	tagBg = pal.AddBg
+																	tagFg = pal.AddText
+																	tagText = "A"
+																case "deleted":
+																	tagBg = pal.DelBg
+																	tagFg = pal.DelText
+																	tagText = "D"
+																}
+																return a.drawTag(gtx, tagText, tagBg, tagFg)
+															}),
+															layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+																stats := formatDiffStats(f.Additions, f.Deletions)
+																if stats == "" {
+																	return layout.Dimensions{}
+																}
+																return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+																	layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+																	layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+																		lbl := material.Label(a.theme, unit.Sp(9.5), stats)
+																		lbl.Color = pal.TextMuted
+																		return lbl.Layout(gtx)
+																	}),
+																)
+															}),
+														)
+													}),
 												)
-											}),
-										)
-									})
+											})
+										}),
+									)
 								})
 							}),
 							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -2060,64 +2070,263 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 							}),
 						)
 					})
-				}
+				})
+			}),
+		)
+	})
+}
 
-				if it.isHunk {
-					return drawWithBg(gtx, pal.BadgeBg, func(gtx layout.Context) layout.Dimensions {
-						return layout.Inset{Top: unit.Dp(3), Bottom: unit.Dp(3), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							lbl := material.Label(a.theme, unit.Sp(10.5), it.hunkHeader)
-							lbl.Color = pal.TextMuted
-							return lbl.Layout(gtx)
+func (a *App) layoutDiffDocumentCards(gtx layout.Context, detail *models.CommitDetail, pal Palette) layout.Dimensions {
+	if len(a.fileHeaderClicks) < len(detail.Files) {
+		a.fileHeaderClicks = make([]widget.Clickable, len(detail.Files))
+	}
+	if a.collapsedFiles == nil {
+		a.collapsedFiles = make(map[string]bool)
+	}
+
+	type diffItem struct {
+		isFileHeader bool
+		isHunk       bool
+		isSpacer     bool
+		isCollapsed  bool
+		fileOrigIdx  int
+		fileDir      string
+		fileName     string
+		status       string
+		adds, dels   int
+		hunkHeader   string
+		line         models.DiffLine
+	}
+
+	searchFile := strings.ToLower(strings.TrimSpace(a.searchFilesEditor.Text()))
+
+	// Determine which files to render: single selected file or all matching files
+	var targetIndices []int
+	if a.selectedFileIdx >= 0 && a.selectedFileIdx < len(detail.Files) {
+		targetIndices = append(targetIndices, a.selectedFileIdx)
+	} else {
+		for i, f := range detail.Files {
+			if searchFile != "" && !strings.Contains(strings.ToLower(f.NewPath), searchFile) && !strings.Contains(strings.ToLower(f.OldPath), searchFile) {
+				continue
+			}
+			targetIndices = append(targetIndices, i)
+		}
+	}
+
+	var items []diffItem
+	for _, origIdx := range targetIndices {
+		f := detail.Files[origIdx]
+		isCollapsed := a.collapsedFiles[f.NewPath]
+
+		filePath := filepath.ToSlash(f.NewPath)
+		dir := filepath.Dir(filePath)
+		if dir == "." || dir == "/" {
+			dir = ""
+		} else {
+			dir = dir + "/"
+		}
+		fileName := filepath.Base(filePath)
+
+		items = append(items, diffItem{
+			isFileHeader: true,
+			isCollapsed:  isCollapsed,
+			fileOrigIdx:  origIdx,
+			fileDir:      dir,
+			fileName:     fileName,
+			status:       f.Status,
+			adds:         f.Additions,
+			dels:         f.Deletions,
+		})
+
+		if !isCollapsed {
+			for _, h := range f.Hunks {
+				items = append(items, diffItem{
+					isHunk:     true,
+					hunkHeader: h.Header,
+				})
+				for _, l := range h.Lines {
+					items = append(items, diffItem{
+						line: l,
+					})
+				}
+			}
+		}
+
+		// Separate file documents with a spacious gap
+		items = append(items, diffItem{isSpacer: true})
+	}
+
+	if len(items) == 0 {
+		return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			lbl := material.Label(a.theme, unit.Sp(12), "No files matching filter")
+			lbl.Color = pal.TextMuted
+			return lbl.Layout(gtx)
+		})
+	}
+
+	return a.createListStyle(&a.diffList, pal).Layout(gtx, len(items), func(gtx layout.Context, idx int) layout.Dimensions {
+		it := items[idx]
+
+		if it.isSpacer {
+			return layout.Inset{Top: unit.Dp(6), Bottom: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return drawDivider(gtx, pal.Border)
+			})
+		}
+
+		if it.isFileHeader {
+			var click *widget.Clickable
+			if it.fileOrigIdx < len(a.fileHeaderClicks) {
+				click = &a.fileHeaderClicks[it.fileOrigIdx]
+			} else {
+				click = new(widget.Clickable)
+			}
+
+			return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				bg := pal.Surface
+				if click.Hovered() {
+					bg = pal.Hover
+				}
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return drawDivider(gtx, pal.Border)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
+							return layout.Inset{Top: unit.Dp(7), Bottom: unit.Dp(7), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+									// Chevron vector icon
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										ic := a.icons.ExpandMore
+										if it.isCollapsed {
+											ic = a.icons.ChevronRight
+										}
+										return a.icons.Layout(gtx, ic, pal.Accent, unit.Dp(13))
+									}),
+									layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+									// File vector icon
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										return a.icons.Layout(gtx, a.icons.File, pal.TextMuted, unit.Dp(13))
+									}),
+									layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+									// Directory path (muted, comfortable to read)
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										if it.fileDir == "" {
+											return layout.Dimensions{}
+										}
+										lbl := material.Label(a.theme, unit.Sp(11), it.fileDir)
+										lbl.Color = pal.TextMuted
+										return lbl.Layout(gtx)
+									}),
+									// File name (bold, prominent)
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										lbl := material.Label(a.theme, unit.Sp(11.5), it.fileName)
+										lbl.Font.Weight = font.Bold
+										lbl.Color = pal.Text
+										return lbl.Layout(gtx)
+									}),
+									layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+									// Status tag
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										tagColor := pal.BadgeBg
+										tagText := pal.BadgeText
+										switch strings.ToLower(it.status) {
+										case "added":
+											tagColor = pal.AddBg
+											tagText = pal.AddText
+										case "deleted":
+											tagColor = pal.DelBg
+											tagText = pal.DelText
+										}
+										return a.drawTag(gtx, strings.ToUpper(it.status), tagColor, tagText)
+									}),
+									layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										if !it.isCollapsed {
+											return layout.Dimensions{}
+										}
+										lbl := material.Label(a.theme, unit.Sp(10), "collapsed")
+										lbl.Color = pal.TextMuted
+										return lbl.Layout(gtx)
+									}),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										stats := formatDiffStats(it.adds, it.dels)
+										if stats == "" {
+											return layout.Dimensions{}
+										}
+										return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+											layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+											layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+												lbl := material.Label(a.theme, unit.Sp(10.5), stats)
+												lbl.Color = pal.TextMuted
+												return lbl.Layout(gtx)
+											}),
+										)
+									}),
+								)
+							})
 						})
-					})
-				}
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return drawDivider(gtx, pal.Border)
+					}),
+				)
+			})
+		}
 
-				// Content line
-				bgColor := pal.Bg
-				textColor := pal.Text
-				prefix := " "
-				lineNo := ""
-
-				if it.line.Type == "add" {
-					bgColor = pal.AddBg
-					textColor = pal.AddText
-					prefix = "+"
-					lineNo = fmt.Sprintf("%d", it.line.NewLineNo)
-				} else if it.line.Type == "del" {
-					bgColor = pal.DelBg
-					textColor = pal.DelText
-					prefix = "-"
-					lineNo = fmt.Sprintf("%d", it.line.OldLineNo)
-				} else {
-					lineNo = fmt.Sprintf("%d", it.line.NewLineNo)
-				}
-
-				return drawWithBg(gtx, bgColor, func(gtx layout.Context) layout.Dimensions {
-					return layout.Inset{Top: unit.Dp(1), Bottom: unit.Dp(1), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								gtx.Constraints.Min.X = gtx.Dp(unit.Dp(35))
-								gtx.Constraints.Max.X = gtx.Dp(unit.Dp(35))
-								lbl := material.Label(a.theme, unit.Sp(10), lineNo)
-								lbl.Color = pal.TextMuted
-								return lbl.Layout(gtx)
-							}),
-							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Label(a.theme, unit.Sp(10.5), prefix+" ")
-								lbl.Color = textColor
-								return lbl.Layout(gtx)
-							}),
-							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-								lbl := material.Label(a.theme, unit.Sp(10.5), it.line.Content)
-								lbl.Color = textColor
-								return lbl.Layout(gtx)
-							}),
-						)
-					})
+		if it.isHunk {
+			return drawWithBg(gtx, pal.BadgeBg, func(gtx layout.Context) layout.Dimensions {
+				return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					lbl := material.Label(a.theme, unit.Sp(10.5), it.hunkHeader)
+					lbl.Color = pal.TextMuted
+					return lbl.Layout(gtx)
 				})
 			})
-		}),
-	)
+		}
+
+		// Content line
+		bgColor := pal.Bg
+		textColor := pal.Text
+		prefix := " "
+		lineNo := ""
+
+		if it.line.Type == "add" {
+			bgColor = pal.AddBg
+			textColor = pal.AddText
+			prefix = "+"
+			lineNo = fmt.Sprintf("%d", it.line.NewLineNo)
+		} else if it.line.Type == "del" {
+			bgColor = pal.DelBg
+			textColor = pal.DelText
+			prefix = "-"
+			lineNo = fmt.Sprintf("%d", it.line.OldLineNo)
+		} else {
+			lineNo = fmt.Sprintf("%d", it.line.NewLineNo)
+		}
+
+		return drawWithBg(gtx, bgColor, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(1), Bottom: unit.Dp(1), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						gtx.Constraints.Min.X = gtx.Dp(unit.Dp(38))
+						gtx.Constraints.Max.X = gtx.Dp(unit.Dp(38))
+						lbl := material.Label(a.theme, unit.Sp(10), lineNo)
+						lbl.Color = pal.TextMuted
+						return lbl.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Label(a.theme, unit.Sp(10.5), prefix+" ")
+						lbl.Color = textColor
+						return lbl.Layout(gtx)
+					}),
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						lbl := material.Label(a.theme, unit.Sp(10.5), it.line.Content)
+						lbl.Color = textColor
+						return lbl.Layout(gtx)
+					}),
+				)
+			})
+		})
+	})
 }
 
 // Merged commits list inside a merge commit
@@ -2387,12 +2596,12 @@ func (a *App) drawCopyBadge(gtx layout.Context, btn *widget.Clickable, hashToCop
 		}
 
 		return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
-			return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2), Left: unit.Dp(5), Right: unit.Dp(5)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(2), Bottom: unit.Dp(2), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						text := displayLabel
 						if isCopied {
-							text = "Copied! ✓"
+							text = "Copied!"
 						}
 						lbl := material.Label(a.theme, unit.Sp(10), text)
 						if isCopied {
@@ -2403,15 +2612,12 @@ func (a *App) drawCopyBadge(gtx layout.Context, btn *widget.Clickable, hashToCop
 						}
 						return lbl.Layout(gtx)
 					}),
+					layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						if isCopied {
-							return layout.Dimensions{}
+							return a.icons.Layout(gtx, a.icons.Check, pal.Accent, unit.Dp(11))
 						}
-						return layout.Inset{Left: unit.Dp(3)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							lbl := material.Label(a.theme, unit.Sp(8.5), "📋")
-							lbl.Color = pal.TextMuted
-							return lbl.Layout(gtx)
-						})
+						return a.icons.Layout(gtx, a.icons.Copy, fg, unit.Dp(11))
 					}),
 				)
 			})
@@ -2471,6 +2677,51 @@ func (a *App) drawPillButton(gtx layout.Context, btn *widget.Clickable, txt stri
 				lbl.Color = fg
 				lbl.Font.Weight = font.Medium
 				return lbl.Layout(gtx)
+			})
+		})
+	})
+}
+
+func (a *App) drawIconPillButton(gtx layout.Context, btn *widget.Clickable, ic *widget.Icon, txt string, active bool, pal Palette) layout.Dimensions {
+	return btn.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		bg := pal.Surface
+		fg := pal.TextMuted
+		if active {
+			bg = pal.Accent
+			fg = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+		} else if btn.Hovered() {
+			bg = pal.Hover
+			fg = pal.Text
+		}
+
+		return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(8), Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if ic == nil {
+							return layout.Dimensions{}
+						}
+						return a.icons.Layout(gtx, ic, fg, unit.Dp(11))
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if ic == nil || txt == "" {
+							return layout.Dimensions{}
+						}
+						return layout.Spacer{Width: unit.Dp(5)}.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if txt == "" {
+							return layout.Dimensions{}
+						}
+						lbl := material.Label(a.theme, unit.Sp(10.5), txt)
+						lbl.Color = fg
+						lbl.Font.Weight = font.Medium
+						if active {
+							lbl.Font.Weight = font.Bold
+						}
+						return lbl.Layout(gtx)
+					}),
+				)
 			})
 		})
 	})

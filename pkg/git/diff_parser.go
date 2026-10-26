@@ -44,7 +44,7 @@ func ParseUnifiedDiff(rawDiff string) []models.DiffFile {
 	}
 
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimRight(scanner.Text(), "\r")
 
 		// Diff header start
 		if strings.HasPrefix(line, "diff --git ") {
@@ -97,7 +97,7 @@ func ParseUnifiedDiff(rawDiff string) []models.DiffFile {
 				newLineNo = newStart
 			}
 			currentHunk = &models.DiffHunk{
-				Header: line,
+				Header: SanitizeCodeText(line),
 				Lines:  make([]models.DiffLine, 0),
 			}
 			continue
@@ -110,7 +110,7 @@ func ParseUnifiedDiff(rawDiff string) []models.DiffFile {
 				currentHunk.Lines = append(currentHunk.Lines, models.DiffLine{
 					Type:      "add",
 					NewLineNo: newLineNo,
-					Content:   line[1:],
+					Content:   SanitizeCodeText(line[1:]),
 				})
 				newLineNo++
 			} else if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
@@ -118,7 +118,7 @@ func ParseUnifiedDiff(rawDiff string) []models.DiffFile {
 				currentHunk.Lines = append(currentHunk.Lines, models.DiffLine{
 					Type:      "del",
 					OldLineNo: oldLineNo,
-					Content:   line[1:],
+					Content:   SanitizeCodeText(line[1:]),
 				})
 				oldLineNo++
 			} else if strings.HasPrefix(line, " ") {
@@ -126,7 +126,7 @@ func ParseUnifiedDiff(rawDiff string) []models.DiffFile {
 					Type:      "context",
 					OldLineNo: oldLineNo,
 					NewLineNo: newLineNo,
-					Content:   line[1:],
+					Content:   SanitizeCodeText(line[1:]),
 				})
 				oldLineNo++
 				newLineNo++
@@ -174,6 +174,32 @@ func DiffFileSummary(files []models.DiffFile) (adds, dels int) {
 		dels += f.Deletions
 	}
 	return
+}
+
+// SanitizeCodeText expands tab characters into 4 spaces and strips carriage returns/control chars
+// so that GUI text renderers (e.g. Gio / Direct3D) do not render missing glyph tofu boxes (□).
+func SanitizeCodeText(s string) string {
+	if !strings.ContainsAny(s, "\t\r\v\f\x00") {
+		return s
+	}
+	var sb strings.Builder
+	col := 0
+	for _, r := range s {
+		switch r {
+		case '\t':
+			spaces := 4 - (col % 4)
+			for i := 0; i < spaces; i++ {
+				sb.WriteByte(' ')
+			}
+			col += spaces
+		case '\r', '\v', '\f', 0:
+			// Strip carriage return and control chars
+		default:
+			sb.WriteRune(r)
+			col++
+		}
+	}
+	return sb.String()
 }
 
 func _unused() {

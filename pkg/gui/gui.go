@@ -2295,7 +2295,7 @@ func (a *App) layoutDiffDocumentCards(gtx layout.Context, detail *models.CommitD
 		if it.isHunk {
 			return drawWithBg(gtx, pal.BadgeBg, func(gtx layout.Context) layout.Dimensions {
 				return layout.Inset{Top: unit.Dp(5), Bottom: unit.Dp(5), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					lbl := material.Label(a.theme, unit.Sp(10.5), it.hunkHeader)
+					lbl := material.Label(a.theme, unit.Sp(10.5), git.SanitizeCodeText(it.hunkHeader))
 					lbl.Color = pal.TextMuted
 					return lbl.Layout(gtx)
 				})
@@ -2338,7 +2338,7 @@ func (a *App) layoutDiffDocumentCards(gtx layout.Context, detail *models.CommitD
 						return lbl.Layout(gtx)
 					}),
 					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-						lbl := material.Label(a.theme, unit.Sp(10.5), it.line.Content)
+						lbl := material.Label(a.theme, unit.Sp(10.5), git.SanitizeCodeText(it.line.Content))
 						lbl.Color = textColor
 						return lbl.Layout(gtx)
 					}),

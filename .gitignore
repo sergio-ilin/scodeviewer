@@ -1,0 +1,4 @@
+scodeviewer.exe
+*.exe
+.vscode/
+.idea/

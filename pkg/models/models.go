@@ -118,7 +118,9 @@ type UpdatesResult struct {
 
 // BranchInfo represents a git branch
 type BranchInfo struct {
-	Name      string `json:"name"`
-	IsCurrent bool   `json:"isCurrent"`
-	IsRemote  bool   `json:"isRemote"`
+	Name       string `json:"name"`
+	IsCurrent  bool   `json:"isCurrent"`
+	IsRemote   bool   `json:"isRemote"`
+	LastUpdate string `json:"lastUpdate,omitempty"`
+	LastAuthor string `json:"lastAuthor,omitempty"`
 }

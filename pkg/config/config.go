@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -130,6 +131,25 @@ func (m *Manager) RemoveProject(id string) bool {
 		_ = m.save()
 	}
 	return found
+}
+
+func (m *Manager) RenameProject(idOrPath string, newName string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cleanName := strings.TrimSpace(newName)
+	if cleanName == "" {
+		return false
+	}
+
+	for i, p := range m.config.Projects {
+		if p.ID == idOrPath || p.Path == idOrPath {
+			m.config.Projects[i].Name = cleanName
+			_ = m.save()
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) SetActive(pathOrID string) (models.Project, bool) {

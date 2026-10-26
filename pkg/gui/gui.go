@@ -41,10 +41,12 @@ type App struct {
 
 	// State
 	mu             sync.Mutex
+	projects       []models.Project
 	subRepos       []models.SubRepo
 	branches       []models.BranchInfo
 	activeBranch   string
 	commits        []models.CommitSummary
+	uncommitted    *models.CommitDetail
 	selectedHash   string
 	selectedDetail *models.CommitDetail
 	updatesData    *models.UpdatesResult
@@ -55,18 +57,32 @@ type App struct {
 	countDirect int
 	countAI     int
 
+	// Search Editors
+	searchProjectsEditor widget.Editor
+	searchBranchesEditor widget.Editor
+	searchCommitsEditor  widget.Editor
+
+	// Project Renaming
+	renamingProjID string
+	renameEditor   widget.Editor
+	btnSaveRename  widget.Clickable
+	btnCancelRename widget.Clickable
+
 	// Filters
-	searchEditor widget.Editor
 	commitFilter string // "all", "merges", "direct", "ai"
 	timePeriod   string // "1h", "24h", "today", "3d", "7d", "30d", "all"
 	aiFilter     string // "all", "ai_only", "human_only"
 
 	// UI Widgets - Left Sidebar
-	btnOpenFolder   widget.Clickable
+	btnAddProject   widget.Clickable
 	btnTabCommits   widget.Clickable
 	btnTabUpdates   widget.Clickable
+	projectClicks   []widget.Clickable
+	projectRenameBtns []widget.Clickable
+	projectDeleteBtns []widget.Clickable
 	subRepoClicks   []widget.Clickable
 	branchClicks    []widget.Clickable
+	projectsList    layout.List
 	branchesList    layout.List
 	subReposList    layout.List
 
@@ -107,32 +123,40 @@ func NewApp(initialPath string) *App {
 	gitSvc := git.NewService()
 
 	target := initialPath
-	if target == "" && cfgMgr != nil {
+	var savedProjects []models.Project
+	if cfgMgr != nil {
 		cfg := cfgMgr.GetConfig()
-		if cfg.ActivePath != "" && gitSvc.IsGitRepo(cfg.ActivePath) {
+		savedProjects = cfg.Projects
+		if target == "" && cfg.ActivePath != "" && gitSvc.IsGitRepo(cfg.ActivePath) {
 			target = cfg.ActivePath
 		}
 	}
 
 	a := &App{
-		theme:        th,
-		gitSvc:       gitSvc,
-		cfgMgr:       cfgMgr,
-		rootPath:     target,
-		activeRepo:   target,
-		activeTab:    "commits",
-		commitFilter: "all",
-		timePeriod:   "7d",
-		aiFilter:     "all",
-		branchesList: layout.List{Axis: layout.Vertical},
-		subReposList: layout.List{Axis: layout.Vertical},
-		commitsList:  layout.List{Axis: layout.Vertical},
-		diffList:     layout.List{Axis: layout.Vertical},
-		updatesList:  layout.List{Axis: layout.Vertical},
+		theme:         th,
+		gitSvc:        gitSvc,
+		cfgMgr:        cfgMgr,
+		rootPath:      target,
+		activeRepo:    target,
+		projects:      savedProjects,
+		activeTab:     "commits",
+		commitFilter:  "all",
+		timePeriod:    "7d",
+		aiFilter:      "all",
+		projectsList:  layout.List{Axis: layout.Vertical},
+		branchesList:  layout.List{Axis: layout.Vertical},
+		subReposList:  layout.List{Axis: layout.Vertical},
+		commitsList:   layout.List{Axis: layout.Vertical},
+		diffList:      layout.List{Axis: layout.Vertical},
+		updatesList:   layout.List{Axis: layout.Vertical},
 	}
 
 	if target != "" {
 		a.repoName = filepath.Base(target)
+		if cfgMgr != nil {
+			cfgMgr.AddProject(target, true)
+			a.projects = cfgMgr.GetConfig().Projects
+		}
 	}
 
 	return a
@@ -142,7 +166,7 @@ func (a *App) Run() error {
 	a.window = new(app.Window)
 	a.window.Option(
 		app.Title("sCodeViewer"),
-		app.Size(unit.Dp(1200), unit.Dp(760)),
+		app.Size(unit.Dp(1220), unit.Dp(780)),
 		app.MinSize(unit.Dp(900), unit.Dp(550)),
 	)
 
@@ -171,6 +195,14 @@ func (a *App) loadData() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	// Refresh projects list from config
+	if a.cfgMgr != nil {
+		a.projects = a.cfgMgr.GetConfig().Projects
+		a.projectClicks = make([]widget.Clickable, len(a.projects))
+		a.projectRenameBtns = make([]widget.Clickable, len(a.projects))
+		a.projectDeleteBtns = make([]widget.Clickable, len(a.projects))
+	}
+
 	// Discover nested repos
 	if a.rootPath != "" {
 		subRepos, err := a.gitSvc.FindGitRepositories(a.rootPath)
@@ -180,6 +212,7 @@ func (a *App) loadData() {
 		}
 	}
 
+	// Load branches with last commit author and time
 	branches, _ := a.gitSvc.GetBranches(a.activeRepo)
 	a.branches = branches
 	a.branchClicks = make([]widget.Clickable, len(branches))
@@ -187,29 +220,57 @@ func (a *App) loadData() {
 	curr, _ := a.gitSvc.GetCurrentBranch(a.activeRepo)
 	a.activeBranch = curr
 
+	// Check uncommitted changes
+	uncommitted, hasUncommitted := a.gitSvc.GetUncommittedChanges(a.activeRepo)
+	if hasUncommitted {
+		a.uncommitted = uncommitted
+	} else {
+		a.uncommitted = nil
+	}
+
 	a.reloadCommitsLocked()
 	a.reloadUpdatesLocked()
 	a.isDataLoaded = true
 
 	if a.selectedHash != "" {
-		detail, err := a.gitSvc.GetCommitDetail(a.activeRepo, a.selectedHash)
-		if err == nil {
-			a.selectedDetail = detail
-			a.mergedClicks = make([]widget.Clickable, len(detail.MergedCommits))
+		if a.selectedHash == "UNCOMMITTED" && a.uncommitted != nil {
+			a.selectedDetail = a.uncommitted
+		} else {
+			detail, err := a.gitSvc.GetCommitDetail(a.activeRepo, a.selectedHash)
+			if err == nil {
+				a.selectedDetail = detail
+				a.mergedClicks = make([]widget.Clickable, len(detail.MergedCommits))
+			}
 		}
 	}
 }
 
 func (a *App) reloadCommitsLocked() {
-	// Always fetch all commits to calculate accurate filter counts
+	// Re-check uncommitted changes
+	uncommitted, hasUncommitted := a.gitSvc.GetUncommittedChanges(a.activeRepo)
+	if hasUncommitted {
+		a.uncommitted = uncommitted
+	} else {
+		a.uncommitted = nil
+	}
+
 	allCommits, err := a.gitSvc.GetCommits(a.activeRepo, a.activeBranch, "", "", false, 250, 0)
 	if err == nil {
 		a.countAll = len(allCommits)
+		if a.uncommitted != nil {
+			a.countAll++
+		}
 		a.countMerges = 0
 		a.countDirect = 0
 		a.countAI = 0
 
 		var filtered []models.CommitSummary
+
+		// Put uncommitted changes at top if matches filter
+		if a.uncommitted != nil && (a.commitFilter == "all" || a.commitFilter == "direct") {
+			filtered = append(filtered, a.uncommitted.CommitSummary)
+		}
+
 		for _, c := range allCommits {
 			if c.IsMerge {
 				a.countMerges++
@@ -253,10 +314,14 @@ func (a *App) reloadCommitsLocked() {
 
 		if (!foundSelected || a.selectedHash == "") && len(filtered) > 0 {
 			a.selectedHash = filtered[0].Hash
-			detail, errDetail := a.gitSvc.GetCommitDetail(a.activeRepo, filtered[0].Hash)
-			if errDetail == nil {
-				a.selectedDetail = detail
-				a.mergedClicks = make([]widget.Clickable, len(detail.MergedCommits))
+			if filtered[0].Hash == "UNCOMMITTED" && a.uncommitted != nil {
+				a.selectedDetail = a.uncommitted
+			} else {
+				detail, errDetail := a.gitSvc.GetCommitDetail(a.activeRepo, filtered[0].Hash)
+				if errDetail == nil {
+					a.selectedDetail = detail
+					a.mergedClicks = make([]widget.Clickable, len(detail.MergedCommits))
+				}
 			}
 		} else if len(filtered) == 0 {
 			a.selectedHash = ""
@@ -280,6 +345,18 @@ func (a *App) reloadUpdatesLocked() {
 }
 
 func (a *App) loadCommitDetail(hash string) {
+	if hash == "UNCOMMITTED" {
+		a.mu.Lock()
+		if a.uncommitted != nil {
+			a.selectedDetail = a.uncommitted
+		}
+		a.mu.Unlock()
+		if a.window != nil {
+			a.window.Invalidate()
+		}
+		return
+	}
+
 	detail, err := a.gitSvc.GetCommitDetail(a.activeRepo, hash)
 	if err == nil {
 		a.mu.Lock()
@@ -293,8 +370,8 @@ func (a *App) loadCommitDetail(hash string) {
 }
 
 func (a *App) handleEvents(gtx layout.Context) {
-	// Open Folder
-	if a.btnOpenFolder.Clicked(gtx) {
+	// Add Project / Open Folder
+	if a.btnAddProject.Clicked(gtx) {
 		go func() {
 			path := openFolderDialog()
 			if path != "" && a.gitSvc.IsGitRepo(path) {
@@ -316,6 +393,19 @@ func (a *App) handleEvents(gtx layout.Context) {
 		}()
 	}
 
+	// Rename save/cancel
+	if a.btnSaveRename.Clicked(gtx) {
+		newName := strings.TrimSpace(a.renameEditor.Text())
+		if newName != "" && a.renamingProjID != "" && a.cfgMgr != nil {
+			a.cfgMgr.RenameProject(a.renamingProjID, newName)
+			a.projects = a.cfgMgr.GetConfig().Projects
+		}
+		a.renamingProjID = ""
+	}
+	if a.btnCancelRename.Clicked(gtx) {
+		a.renamingProjID = ""
+	}
+
 	// Tab switcher
 	if a.btnTabCommits.Clicked(gtx) {
 		a.activeTab = "commits"
@@ -327,8 +417,52 @@ func (a *App) handleEvents(gtx layout.Context) {
 		a.mu.Unlock()
 	}
 
-	// SubRepo clicks
+	// Switch Projects
 	a.mu.Lock()
+	for i := range a.projectClicks {
+		if i < len(a.projects) && a.projectClicks[i].Clicked(gtx) {
+			p := a.projects[i]
+			a.rootPath = p.Path
+			a.activeRepo = p.Path
+			a.repoName = p.Name
+			a.selectedHash = ""
+			a.selectedDetail = nil
+			if a.cfgMgr != nil {
+				a.cfgMgr.SetActive(p.Path)
+			}
+			go func() {
+				a.loadData()
+				if a.window != nil {
+					a.window.Invalidate()
+				}
+			}()
+			break
+		}
+	}
+
+	// Rename button click on project
+	for i := range a.projectRenameBtns {
+		if i < len(a.projects) && a.projectRenameBtns[i].Clicked(gtx) {
+			p := a.projects[i]
+			a.renamingProjID = p.ID
+			a.renameEditor.SetText(p.Name)
+			break
+		}
+	}
+
+	// Delete project from list
+	for i := range a.projectDeleteBtns {
+		if i < len(a.projects) && a.projectDeleteBtns[i].Clicked(gtx) {
+			p := a.projects[i]
+			if a.cfgMgr != nil {
+				a.cfgMgr.RemoveProject(p.ID)
+				a.projects = a.cfgMgr.GetConfig().Projects
+			}
+			break
+		}
+	}
+
+	// SubRepo clicks
 	for i := range a.subRepoClicks {
 		if i < len(a.subRepos) && a.subRepoClicks[i].Clicked(gtx) {
 			a.activeRepo = a.subRepos[i].Path
@@ -445,7 +579,6 @@ func (a *App) handleEvents(gtx layout.Context) {
 }
 
 func (a *App) layout(gtx layout.Context) layout.Dimensions {
-	// Always use system theme automatically
 	pal := GetPalette(ThemeAuto)
 
 	// Clip & Fill window background
@@ -456,14 +589,14 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 	}
 
 	// Professional 3-Panel Architecture:
-	// Panel 1 (Left 230dp): Project / SubRepos + Branches + Views
-	// Panel 2 (Middle 360dp): Commits & Merges / Updates Feed
-	// Panel 3 (Right flexed): Detailed Diff Viewer / Analytics
+	// Panel 1 (Left 250dp): Persistent Workspaces + Sub-repos + Branches + Views
+	// Panel 2 (Middle 360dp): Commits & Merges with Uncommitted Changes + Counts
+	// Panel 3 (Right flexed): Diff Viewer / Merged Commits / Analytics
 	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 		// Panel 1: Left Navigation Sidebar
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			gtx.Constraints.Min.X = gtx.Dp(unit.Dp(230))
-			gtx.Constraints.Max.X = gtx.Dp(unit.Dp(230))
+			gtx.Constraints.Min.X = gtx.Dp(unit.Dp(250))
+			gtx.Constraints.Max.X = gtx.Dp(unit.Dp(250))
 			return a.layoutLeftSidebar(gtx, pal)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -486,20 +619,26 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 }
 
 // -------------------------------------------------------------
-// PANEL 1: Left Sidebar (Project Scope, Sub-repos, Branches, Views)
+// PANEL 1: Left Sidebar (Persistent Projects, Branches with Author & Time)
 // -------------------------------------------------------------
 func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensions {
 	a.mu.Lock()
+	projects := a.projects
 	subRepos := a.subRepos
 	branches := a.branches
 	activeRepo := a.activeRepo
 	activeBranch := a.activeBranch
+	rootPath := a.rootPath
+	renamingID := a.renamingProjID
 	a.mu.Unlock()
+
+	searchProj := strings.ToLower(strings.TrimSpace(a.searchProjectsEditor.Text()))
+	searchBranch := strings.ToLower(strings.TrimSpace(a.searchBranchesEditor.Text()))
 
 	return drawWithBg(gtx, pal.HeaderBg, func(gtx layout.Context) layout.Dimensions {
 		return layout.Inset{Top: unit.Dp(10), Bottom: unit.Dp(10), Left: unit.Dp(10), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				// App Brand + Open Folder
+				// App Brand
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -510,17 +649,17 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 						}),
 						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return a.drawPillButton(gtx, &a.btnOpenFolder, "Open...", false, pal)
+							return a.drawPillButton(gtx, &a.btnAddProject, "+ Add Repo", false, pal)
 						}),
 					)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return drawDivider(gtx, pal.Border)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 
-				// VIEW SWITCHER (Commits vs Updates)
+				// VIEW SWITCHER
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return a.drawSectionHeader(gtx, "VIEWS", pal)
 				}),
@@ -532,89 +671,257 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return a.drawNavRow(gtx, &a.btnTabUpdates, "Activity & Updates", a.activeTab == "updates", pal)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return drawDivider(gtx, pal.Border)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 
-				// PROJECTS / SUB-REPOSITORIES SECTION
+				// PERSISTENT PROJECTS / WORKSPACES SECTION
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					title := fmt.Sprintf("PROJECTS (%d)", len(subRepos))
-					if len(subRepos) == 0 {
-						title = "PROJECT (1)"
-					}
-					return a.drawSectionHeader(gtx, title, pal)
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawSectionHeader(gtx, fmt.Sprintf("PROJECTS (%d)", len(projects)), pal)
+						}),
+					)
 				}),
 				layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+
+				// Search Projects Input (if multiple projects)
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					if len(subRepos) <= 1 {
-						name := a.repoName
-						if name == "" {
-							name = "main repository"
-						}
-						return a.drawTreeItem(gtx, name, true, true, pal)
+					if len(projects) <= 3 {
+						return layout.Dimensions{}
 					}
-					// List sub-repositories
-					return a.subReposList.Layout(gtx, len(subRepos), func(gtx layout.Context, idx int) layout.Dimensions {
-						r := subRepos[idx]
-						isActive := r.Path == activeRepo
+					ed := material.Editor(a.theme, &a.searchProjectsEditor, "Filter projects...")
+					ed.TextSize = unit.Sp(10.5)
+					ed.Color = pal.Text
+					ed.HintColor = pal.TextMuted
+					return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
+						return layout.UniformInset(unit.Dp(4)).Layout(gtx, ed.Layout)
+					})
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+
+				// Projects List (with active highlight, rename, delete)
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.projectsList.Layout(gtx, len(projects), func(gtx layout.Context, idx int) layout.Dimensions {
+						p := projects[idx]
+						if searchProj != "" && !strings.Contains(strings.ToLower(p.Name), searchProj) && !strings.Contains(strings.ToLower(p.Path), searchProj) {
+							return layout.Dimensions{}
+						}
+
+						isActive := p.Path == rootPath
+
+						// If currently renaming this project
+						if p.ID == renamingID {
+							return a.drawRenameEditor(gtx, pal)
+						}
+
 						var click *widget.Clickable
-						if idx < len(a.subRepoClicks) {
-							click = &a.subRepoClicks[idx]
+						if idx < len(a.projectClicks) {
+							click = &a.projectClicks[idx]
 						} else {
 							click = new(widget.Clickable)
 						}
 
-						displayName := r.Name
-						if !r.IsRoot && r.RelPath != "" {
-							displayName = r.RelPath
+						var btnRename *widget.Clickable
+						if idx < len(a.projectRenameBtns) {
+							btnRename = &a.projectRenameBtns[idx]
+						} else {
+							btnRename = new(widget.Clickable)
+						}
+
+						var btnDelete *widget.Clickable
+						if idx < len(a.projectDeleteBtns) {
+							btnDelete = &a.projectDeleteBtns[idx]
+						} else {
+							btnDelete = new(widget.Clickable)
 						}
 
 						return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							return a.drawNavRow(gtx, click, displayName, isActive, pal)
+							bg := pal.HeaderBg
+							fg := pal.Text
+							if isActive {
+								bg = pal.Selected
+								fg = pal.Accent
+							} else if click.Hovered() {
+								bg = pal.Hover
+							}
+
+							return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
+								return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											lbl := material.Label(a.theme, unit.Sp(11), p.Name)
+											lbl.Color = fg
+											if isActive {
+												lbl.Font.Weight = font.Bold
+											} else {
+												lbl.Font.Weight = font.Medium
+											}
+											return lbl.Layout(gtx)
+										}),
+										layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+										// Rename button [Edit]
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											return btnRename.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+												lbl := material.Label(a.theme, unit.Sp(9), "edit")
+												lbl.Color = pal.TextMuted
+												return lbl.Layout(gtx)
+											})
+										}),
+										layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+										// Delete button [x]
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											return btnDelete.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+												lbl := material.Label(a.theme, unit.Sp(10), "✕")
+												lbl.Color = pal.TextMuted
+												return lbl.Layout(gtx)
+											})
+										}),
+									)
+								})
+							})
 						})
 					})
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+
+				// NESTED SUB-REPOSITORIES (if active project has nested repos)
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					if len(subRepos) <= 1 {
+						return layout.Dimensions{}
+					}
+					return layout.Inset{Top: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return a.drawSectionHeader(gtx, fmt.Sprintf("SUB-REPOSITORIES (%d)", len(subRepos)), pal)
+							}),
+							layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return a.subReposList.Layout(gtx, len(subRepos), func(gtx layout.Context, idx int) layout.Dimensions {
+									r := subRepos[idx]
+									isActive := r.Path == activeRepo
+									var click *widget.Clickable
+									if idx < len(a.subRepoClicks) {
+										click = &a.subRepoClicks[idx]
+									} else {
+										click = new(widget.Clickable)
+									}
+
+									name := r.Name
+									if !r.IsRoot && r.RelPath != "" {
+										name = "└ " + r.RelPath
+									}
+
+									return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+										return a.drawNavRow(gtx, click, name, isActive, pal)
+									})
+								})
+							}),
+						)
+					})
+				}),
+
+				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return drawDivider(gtx, pal.Border)
 				}),
-				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 
-				// BRANCHES SECTION (Scrollable list of all branches)
+				// BRANCHES SECTION (Searchable, with Author and Last Update)
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return a.drawSectionHeader(gtx, fmt.Sprintf("BRANCHES (%d)", len(branches)), pal)
 				}),
 				layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+
+				// Search Branches Input
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					ed := material.Editor(a.theme, &a.searchBranchesEditor, "Filter branches...")
+					ed.TextSize = unit.Sp(10.5)
+					ed.Color = pal.Text
+					ed.HintColor = pal.TextMuted
+					return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
+						return layout.UniformInset(unit.Dp(4)).Layout(gtx, ed.Layout)
+					})
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
+
+				// Scrollable Branches List with Author & Time!
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					if len(branches) == 0 {
+					var filteredBranches []int
+					for i, b := range branches {
+						if searchBranch != "" && !strings.Contains(strings.ToLower(b.Name), searchBranch) && !strings.Contains(strings.ToLower(b.LastAuthor), searchBranch) {
+							continue
+						}
+						filteredBranches = append(filteredBranches, i)
+					}
+
+					if len(filteredBranches) == 0 {
 						return layout.Inset{Top: unit.Dp(4)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							lbl := material.Label(a.theme, unit.Sp(11), "No branches")
+							lbl := material.Label(a.theme, unit.Sp(11), "No matching branches")
 							lbl.Color = pal.TextMuted
 							return lbl.Layout(gtx)
 						})
 					}
 
-					return a.branchesList.Layout(gtx, len(branches), func(gtx layout.Context, idx int) layout.Dimensions {
-						b := branches[idx]
+					return a.branchesList.Layout(gtx, len(filteredBranches), func(gtx layout.Context, fIdx int) layout.Dimensions {
+						origIdx := filteredBranches[fIdx]
+						b := branches[origIdx]
 						isActive := b.Name == activeBranch
+
 						var click *widget.Clickable
-						if idx < len(a.branchClicks) {
-							click = &a.branchClicks[idx]
+						if origIdx < len(a.branchClicks) {
+							click = &a.branchClicks[origIdx]
 						} else {
 							click = new(widget.Clickable)
 						}
 
-						name := b.Name
-						if b.IsCurrent {
-							name = "● " + name
-						} else {
-							name = "  " + name
-						}
-
 						return click.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							return a.drawNavRow(gtx, click, name, isActive, pal)
+							bg := pal.HeaderBg
+							if isActive {
+								bg = pal.Selected
+							} else if click.Hovered() {
+								bg = pal.Hover
+							}
+
+							return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
+								return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+										// Row 1: Branch name with active indicator
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											prefix := "  "
+											if b.IsCurrent {
+												prefix = "● "
+											}
+											lbl := material.Label(a.theme, unit.Sp(11), prefix+b.Name)
+											if isActive {
+												lbl.Font.Weight = font.Bold
+												lbl.Color = pal.Accent
+											} else {
+												lbl.Font.Weight = font.Medium
+												lbl.Color = pal.Text
+											}
+											return lbl.Layout(gtx)
+										}),
+										// Row 2: Author and Last Update Time!
+										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											if b.LastAuthor == "" && b.LastUpdate == "" {
+												return layout.Dimensions{}
+											}
+											sub := b.LastAuthor
+											if b.LastUpdate != "" {
+												if sub != "" {
+													sub += " • "
+												}
+												sub += b.LastUpdate
+											}
+											lbl := material.Label(a.theme, unit.Sp(9.5), "    "+sub)
+											lbl.Color = pal.TextMuted
+											return lbl.Layout(gtx)
+										}),
+									)
+								})
+							})
 						})
 					})
 				}),
@@ -623,8 +930,35 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 	})
 }
 
+func (a *App) drawRenameEditor(gtx layout.Context, pal Palette) layout.Dimensions {
+	return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
+		return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					ed := material.Editor(a.theme, &a.renameEditor, "Project alias...")
+					ed.TextSize = unit.Sp(11)
+					ed.Color = pal.Text
+					return ed.Layout(gtx)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawPillButton(gtx, &a.btnSaveRename, "Save", true, pal)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(4)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawPillButton(gtx, &a.btnCancelRename, "Cancel", false, pal)
+						}),
+					)
+				}),
+			)
+		})
+	})
+}
+
 // -------------------------------------------------------------
-// PANEL 2: Middle Panel (Commits List or Updates List)
+// PANEL 2: Middle Panel (Commits List with Uncommitted Changes + Counts)
 // -------------------------------------------------------------
 func (a *App) layoutCenterPanel(gtx layout.Context, pal Palette) layout.Dimensions {
 	if a.activeTab == "updates" {
@@ -643,7 +977,7 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 	cAI := a.countAI
 	a.mu.Unlock()
 
-	search := strings.ToLower(strings.TrimSpace(a.searchEditor.Text()))
+	search := strings.ToLower(strings.TrimSpace(a.searchCommitsEditor.Text()))
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		// Header info bar: Active Branch & Search
@@ -671,7 +1005,7 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 						layout.Rigid(layout.Spacer{Height: unit.Dp(6)}.Layout),
 						// Search input
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							ed := material.Editor(a.theme, &a.searchEditor, "Search commits or hash...")
+							ed := material.Editor(a.theme, &a.searchCommitsEditor, "Search commits or hash...")
 							ed.TextSize = unit.Sp(11.5)
 							ed.Color = pal.Text
 							ed.HintColor = pal.TextMuted
@@ -707,7 +1041,7 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return drawDivider(gtx, pal.Border)
 		}),
-		// Commits List
+		// Commits List (Includes Uncommitted Changes at top if present)
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			var filtered []models.CommitSummary
 			for _, c := range commits {
@@ -732,6 +1066,7 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 			return a.commitsList.Layout(gtx, len(filtered), func(gtx layout.Context, idx int) layout.Dimensions {
 				c := filtered[idx]
 				isSelected := c.Hash == a.selectedHash
+				isUncommitted := c.Hash == "UNCOMMITTED"
 
 				var click *widget.Clickable
 				for origIdx, origC := range commits {
@@ -766,12 +1101,20 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 											lbl := material.Label(a.theme, unit.Sp(11), c.AuthorName)
 											lbl.Font.Weight = font.SemiBold
-											lbl.Color = pal.Text
+											if isUncommitted {
+												lbl.Color = pal.AddText
+											} else {
+												lbl.Color = pal.Text
+											}
 											return lbl.Layout(gtx)
 										}),
 										layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
 										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-											lbl := material.Label(a.theme, unit.Sp(10.5), formatRelativeTime(c.Date))
+											timeText := formatRelativeTime(c.Date)
+											if isUncommitted {
+												timeText = "Now"
+											}
+											lbl := material.Label(a.theme, unit.Sp(10.5), timeText)
 											lbl.Color = pal.TextMuted
 											return lbl.Layout(gtx)
 										}),
@@ -786,13 +1129,19 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 									}
 									lbl := material.Label(a.theme, unit.Sp(11.5), msg)
 									lbl.Color = pal.Text
+									if isUncommitted {
+										lbl.Font.Weight = font.Bold
+									}
 									return lbl.Layout(gtx)
 								}),
 								layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
-								// Badges + Stats (Distinct MERGE badge)
+								// Badges + Stats
 								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 									return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 										layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+											if isUncommitted {
+												return a.drawTag(gtx, "UNCOMMITTED", pal.AddBg, pal.AddText)
+											}
 											if c.IsMerge {
 												return a.drawTag(gtx, "MERGE", pal.Accent, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
 											}
@@ -986,16 +1335,23 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 		})
 	}
 
+	isUncommitted := detail.Hash == "UNCOMMITTED"
+
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		// Header summary
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return drawWithBg(gtx, pal.Surface, func(gtx layout.Context) layout.Dimensions {
 				return layout.UniformInset(unit.Dp(12)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-						// Subject & Merge tag
+						// Subject & Tag
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									if isUncommitted {
+										return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+											return a.drawTag(gtx, "UNCOMMITTED CHANGES", pal.AddBg, pal.AddText)
+										})
+									}
 									if detail.IsMerge {
 										return layout.Inset{Right: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 											return a.drawTag(gtx, "MERGE COMMIT", pal.Accent, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
@@ -1014,9 +1370,13 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 						layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 						// Metadata row
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							dateStr := formatRelativeTime(detail.Date)
+							if isUncommitted {
+								dateStr = "Current working directory"
+							}
 							meta := fmt.Sprintf("%s  •  %s  •  %s  •  Files: %d  •  +%d -%d",
 								detail.AuthorName,
-								formatRelativeTime(detail.Date),
+								dateStr,
 								detail.ShortHash,
 								len(detail.Files),
 								detail.Additions,
@@ -1359,7 +1719,7 @@ func (a *App) layoutEmptyState(gtx layout.Context, pal Palette) layout.Dimension
 			}),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return a.drawPillButton(gtx, &a.btnOpenFolder, "Open Folder...", true, pal)
+				return a.drawPillButton(gtx, &a.btnAddProject, "Open Folder...", true, pal)
 			}),
 		)
 	})
@@ -1398,28 +1758,6 @@ func (a *App) drawNavRow(gtx layout.Context, btn *widget.Clickable, title string
 				}
 				return lbl.Layout(gtx)
 			})
-		})
-	})
-}
-
-func (a *App) drawTreeItem(gtx layout.Context, name string, active, isRoot bool, pal Palette) layout.Dimensions {
-	bg := pal.HeaderBg
-	fg := pal.Text
-	if active {
-		bg = pal.Selected
-		fg = pal.Accent
-	}
-
-	return drawWithBg(gtx, bg, func(gtx layout.Context) layout.Dimensions {
-		return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(4), Left: unit.Dp(6), Right: unit.Dp(6)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-			prefix := "📁 "
-			if !isRoot {
-				prefix = "  └ "
-			}
-			lbl := material.Label(a.theme, unit.Sp(11), prefix+name)
-			lbl.Color = fg
-			lbl.Font.Weight = font.SemiBold
-			return lbl.Layout(gtx)
 		})
 	})
 }

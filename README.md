@@ -10,18 +10,29 @@
 - **100% Native Desktop Application**:
   - Pure Go with hardware-accelerated 2D rendering (Direct3D 11).
   - No Chromium, no Electron, no WebView, no background console flashes.
-  - Instant startup (<20ms) and minimal RAM usage (~20–40 MB).
-  - Standalone binary size under 9 MB.
+  - Instant startup (<20ms) and minimal RAM usage (~25–45 MB).
+  - Standalone binary size under 9.5 MB.
+
+- **Persistent Workspaces & Projects**:
+  - Multiple added projects/workspaces saved in persistent storage.
+  - Project search & filtering.
+  - Ability to rename/alias projects directly in the UI.
+  - Auto-discovery and navigation of nested repositories (submodules, microservices).
+
+- **Rich Branch Navigation**:
+  - Searchable branch list with real-time filtering.
+  - Relative update times (`2h ago`, `3d ago`) and last commit authors for every branch.
+  - Instant 1-click branch switching.
+
+- **Uncommitted Changes (Working Tree)**:
+  - Working tree changes (modified, added, unstaged, untracked) appear at the top of the commits list.
+  - Immediate diff review of uncommitted work before committing.
 
 - **Commits & Merges Code Review**:
-  - **Separated views**: quick filters for `All`, `Merges Only`, `Direct`, and `AI`.
-  - **Detailed Merge inspection**: view the exact list of commits introduced by each merge commit, with individual author, message, and line stats.
+  - **Separated views**: quick filters with exact counts: `All (N)`, `Merges (M)`, `Direct (D)`, `AI (K)`.
+  - **Detailed Merge inspection**: inspect the exact list of commits introduced by each merge commit, with individual author, message, and line stats.
   - High-performance unified diff viewer with line numbers and syntax contrast.
   - Search by commit message, author, or hash.
-
-- **Branches & Nested Projects**:
-  - **Branch switcher**: inspect and switch between all project branches.
-  - **Nested repository discovery**: auto-scans project folders for nested Git repositories (submodules, microservices, monorepos) and lets you switch between them in 1 click.
 
 - **Updates & Activity Timeline**:
   - Time slices: `1h`, `24h`, `Today`, `3d`, `7d`, `30d`, `All`.

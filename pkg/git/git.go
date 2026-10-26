@@ -127,38 +127,120 @@ func (s *Service) IsGitRepo(path string) bool {
 	return err == nil
 }
 
-// GetBranches returns list of local and remote branches
+// GetBranches returns list of local and remote branches with last update and author
 func (s *Service) GetBranches(repoPath string) ([]models.BranchInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	out, err := s.runGit(ctx, repoPath, "branch", "-a", "--no-color")
+	currentBranch, _ := s.GetCurrentBranch(repoPath)
+
+	out, err := s.runGit(ctx, repoPath, "for-each-ref",
+		`--format=%(refname:short)|%(committerdate:relative)|%(authorname)`,
+		"--sort=-committerdate",
+		"refs/heads/", "refs/remotes/",
+	)
 	if err != nil {
-		return nil, err
+		// Fallback to basic branch -a
+		out, err = s.runGit(ctx, repoPath, "branch", "-a", "--no-color")
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var branches []models.BranchInfo
+	seen := make(map[string]bool)
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.Contains(line, "->") {
+		if line == "" || strings.Contains(line, "->") || strings.HasSuffix(line, "/HEAD") {
 			continue
 		}
-		isCurrent := strings.HasPrefix(line, "*")
-		name := strings.TrimSpace(strings.TrimPrefix(line, "*"))
-		isRemote := strings.HasPrefix(name, "remotes/")
 
-		if isRemote {
-			name = strings.TrimPrefix(name, "remotes/")
+		parts := strings.Split(line, "|")
+		name := strings.TrimSpace(parts[0])
+		name = strings.TrimPrefix(name, "* ")
+		name = strings.TrimPrefix(name, "remotes/")
+
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+
+		isRemote := strings.HasPrefix(name, "origin/")
+		isCurrent := name == currentBranch
+
+		lastUpdate := ""
+		lastAuthor := ""
+		if len(parts) >= 3 {
+			lastUpdate = strings.TrimSpace(parts[1])
+			lastAuthor = strings.TrimSpace(parts[2])
 		}
 
 		branches = append(branches, models.BranchInfo{
-			Name:      name,
-			IsCurrent: isCurrent,
-			IsRemote:  isRemote,
+			Name:       name,
+			IsCurrent:  isCurrent,
+			IsRemote:   isRemote,
+			LastUpdate: lastUpdate,
+			LastAuthor: lastAuthor,
 		})
 	}
 	return branches, nil
+}
+
+// GetUncommittedChanges checks working directory for unstaged/staged changes
+func (s *Service) GetUncommittedChanges(repoPath string) (*models.CommitDetail, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+
+	statusOut, err := s.runGit(ctx, repoPath, "status", "--porcelain")
+	if err != nil || strings.TrimSpace(statusOut) == "" {
+		return nil, false
+	}
+
+	diffOut, err := s.runGit(ctx, repoPath, "diff", "HEAD", "--unified=3")
+	if err != nil {
+		diffOut, _ = s.runGit(ctx, repoPath, "diff", "--unified=3")
+	}
+
+	files := ParseUnifiedDiff(diffOut)
+	adds, dels := DiffFileSummary(files)
+
+	// Also check for untracked files
+	scanner := bufio.NewScanner(strings.NewReader(statusOut))
+	existingFiles := make(map[string]bool)
+	for _, f := range files {
+		existingFiles[f.NewPath] = true
+		existingFiles[f.OldPath] = true
+	}
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "?? ") {
+			filePath := strings.TrimPrefix(line, "?? ")
+			if !existingFiles[filePath] {
+				files = append(files, models.DiffFile{
+					NewPath: filePath,
+					OldPath: filePath,
+					Status:  "untracked",
+				})
+			}
+		}
+	}
+
+	return &models.CommitDetail{
+		CommitSummary: models.CommitSummary{
+			Hash:         "UNCOMMITTED",
+			ShortHash:    "WORKING",
+			AuthorName:   "Working Directory",
+			Date:         time.Now(),
+			Message:      "Uncommitted Changes",
+			FilesChanged: len(files),
+			Additions:    adds,
+			Deletions:    dels,
+		},
+		FullMessage: "Uncommitted changes in working tree",
+		Files:       files,
+	}, true
 }
 
 // GetCurrentBranch returns active branch name

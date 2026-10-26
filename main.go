@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"gioui.org/app"
+	"scodeviewer/pkg/config"
 	"scodeviewer/pkg/git"
 	"scodeviewer/pkg/gui"
 )
@@ -26,6 +27,15 @@ func main() {
 		abs, err := filepath.Abs(targetPath)
 		if err == nil && gitSvc.IsGitRepo(abs) {
 			targetPath = abs
+		}
+	}
+
+	if targetPath == "" {
+		if cfgMgr, err := config.NewManager(); err == nil {
+			cfg := cfgMgr.GetConfig()
+			if cfg.ActivePath != "" && gitSvc.IsGitRepo(cfg.ActivePath) {
+				targetPath = cfg.ActivePath
+			}
 		}
 	}
 

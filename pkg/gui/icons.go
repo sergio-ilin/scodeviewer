@@ -25,6 +25,12 @@ type Icons struct {
 	ViewList     *widget.Icon
 	Timeline     *widget.Icon
 	Rotation3D   *widget.Icon
+	Account      *widget.Icon
+	Push         *widget.Icon
+	Pull         *widget.Icon
+	Sync         *widget.Icon
+	Close        *widget.Icon
+	Save         *widget.Icon
 }
 
 func NewIcons() *Icons {
@@ -49,6 +55,12 @@ func NewIcons() *Icons {
 		ViewList:     load(icons.ActionViewList),
 		Timeline:     load(icons.ActionTimeline),
 		Rotation3D:   load(icons.Action3DRotation),
+		Account:      load(icons.ActionAccountCircle),
+		Push:         load(icons.FileCloudUpload),
+		Pull:         load(icons.FileCloudDownload),
+		Sync:         load(icons.NotificationSync),
+		Close:        load(icons.NavigationClose),
+		Save:         load(icons.ContentSave),
 	}
 }
 

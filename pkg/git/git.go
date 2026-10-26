@@ -669,3 +669,157 @@ func parseCommitsWithNumstat(raw string) []models.CommitSummary {
 
 	return commits
 }
+
+// GitUser represents git author configuration
+type GitUser struct {
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	IsGlobal bool   `json:"isGlobal"`
+}
+
+// GetGitUser retrieves current user name and email from repo or global config
+func (s *Service) GetGitUser(repoPath string) (GitUser, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	u := GitUser{}
+	name, _ := s.runGit(ctx, repoPath, "config", "user.name")
+	email, _ := s.runGit(ctx, repoPath, "config", "user.email")
+	u.Name = strings.TrimSpace(name)
+	u.Email = strings.TrimSpace(email)
+
+	if u.Name == "" || u.Email == "" {
+		gName, _ := s.runGit(ctx, repoPath, "config", "--global", "user.name")
+		gEmail, _ := s.runGit(ctx, repoPath, "config", "--global", "user.email")
+		if u.Name == "" {
+			u.Name = strings.TrimSpace(gName)
+		}
+		if u.Email == "" {
+			u.Email = strings.TrimSpace(gEmail)
+		}
+		u.IsGlobal = true
+	}
+	return u, nil
+}
+
+// SetGitUser sets git user name and email (locally for repo or globally)
+func (s *Service) SetGitUser(repoPath, name, email string, global bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	argsName := []string{"config"}
+	argsEmail := []string{"config"}
+	if global {
+		argsName = append(argsName, "--global")
+		argsEmail = append(argsEmail, "--global")
+	}
+	argsName = append(argsName, "user.name", name)
+	argsEmail = append(argsEmail, "user.email", email)
+
+	if _, err := s.runGit(ctx, repoPath, argsName...); err != nil {
+		return err
+	}
+	if _, err := s.runGit(ctx, repoPath, argsEmail...); err != nil {
+		return err
+	}
+	return nil
+}
+
+// CreateCommit stages changes and creates a commit (or amends previous)
+func (s *Service) CreateCommit(repoPath, message string, amend bool) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// Stage all changes (new, modified, deleted)
+	if _, err := s.runGit(ctx, repoPath, "add", "-A"); err != nil {
+		return "", fmt.Errorf("failed to stage changes: %w", err)
+	}
+
+	args := []string{"commit"}
+	if amend {
+		args = append(args, "--amend")
+	}
+	args = append(args, "-m", message)
+
+	out, err := s.runGit(ctx, repoPath, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// Push pushes commits to remote
+func (s *Service) Push(repoPath, remote, branch string, setUpstream bool) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if remote == "" {
+		remote = "origin"
+	}
+	args := []string{"push"}
+	if setUpstream {
+		args = append(args, "-u")
+	}
+	args = append(args, remote)
+	if branch != "" {
+		args = append(args, branch)
+	}
+
+	out, err := s.runGit(ctx, repoPath, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// Pull pulls latest changes from remote
+func (s *Service) Pull(repoPath string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	out, err := s.runGit(ctx, repoPath, "pull")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// Fetch fetches latest references and prunes remote branches
+func (s *Service) Fetch(repoPath string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	out, err := s.runGit(ctx, repoPath, "fetch", "--all", "--prune")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// Stash saves working directory changes to stash
+func (s *Service) Stash(repoPath, message string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	args := []string{"stash", "push"}
+	if message != "" {
+		args = append(args, "-m", message)
+	}
+	out, err := s.runGit(ctx, repoPath, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// StashPop restores most recent stash
+func (s *Service) StashPop(repoPath string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := s.runGit(ctx, repoPath, "stash", "pop")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}

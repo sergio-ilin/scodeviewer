@@ -61,9 +61,38 @@ type App struct {
 
 	// Filter Counts
 	countAll    int
+	countMine   int
 	countMerges int
 	countDirect int
 	countAI     int
+
+	// User Profile & Personal Office ("Личный кабинет")
+	gitUser               git.GitUser
+	showProfileModal      bool
+	btnOpenProfile        widget.Clickable
+	btnCloseProfile       widget.Clickable
+	btnBackdropProfile    widget.Clickable
+	btnCardProfile        widget.Clickable
+	profileNameEditor     widget.Editor
+	profileEmailEditor    widget.Editor
+	btnSaveProfileLocal   widget.Clickable
+	btnSaveProfileGlobal  widget.Clickable
+	btnProfilePush        widget.Clickable
+	btnProfilePull        widget.Clickable
+	btnProfileFetch       widget.Clickable
+	btnProfileStash       widget.Clickable
+	btnProfileStashPop    widget.Clickable
+	gitOpStatus           string
+	gitOpIsError          bool
+	gitOpTime             time.Time
+
+	// Commit & Working Copy Actions
+	commitMsgEditor        widget.Editor
+	commitAmendBool        widget.Bool
+	btnDoCommit            widget.Clickable
+	btnDoCommitAndPush     widget.Clickable
+	btnDoStashUncommitted  widget.Clickable
+	btnOpenProfileFromDiff widget.Clickable
 
 	// Search Editors
 	searchProjectsEditor widget.Editor
@@ -101,6 +130,7 @@ type App struct {
 
 	// UI Widgets - Middle Panel
 	btnFilterAll    widget.Clickable
+	btnFilterMine   widget.Clickable
 	btnFilterMerges widget.Clickable
 	btnFilterDirect widget.Clickable
 	btnFilterAI     widget.Clickable
@@ -234,6 +264,18 @@ func (a *App) Run() error {
 func (a *App) loadData() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
+	// Load active git user profile
+	if a.activeRepo != "" {
+		u, _ := a.gitSvc.GetGitUser(a.activeRepo)
+		a.gitUser = u
+		if a.profileNameEditor.Text() == "" && u.Name != "" {
+			a.profileNameEditor.SetText(u.Name)
+		}
+		if a.profileEmailEditor.Text() == "" && u.Email != "" {
+			a.profileEmailEditor.SetText(u.Email)
+		}
+	}
 
 	// Refresh projects list from config
 	if a.cfgMgr != nil {
@@ -425,10 +467,23 @@ func (a *App) reloadCommitsLocked() {
 		a.countMerges = 0
 		a.countDirect = 0
 		a.countAI = 0
+		a.countMine = 0
+
+		myName := strings.ToLower(strings.TrimSpace(a.gitUser.Name))
+		myEmail := strings.ToLower(strings.TrimSpace(a.gitUser.Email))
 
 		var pinnedList, regularList []models.CommitSummary
 
 		for _, c := range allCommits {
+			cAuthor := strings.ToLower(c.AuthorName)
+			cEmail := strings.ToLower(c.AuthorEmail)
+			isMine := false
+			if (myName != "" && (cAuthor == myName || strings.Contains(cAuthor, myName))) ||
+				(myEmail != "" && (cEmail == myEmail || strings.Contains(cEmail, myEmail))) {
+				isMine = true
+				a.countMine++
+			}
+
 			if c.IsMerge {
 				a.countMerges++
 			} else {
@@ -445,6 +500,8 @@ func (a *App) reloadCommitsLocked() {
 			// Apply active filter
 			match := false
 			switch a.commitFilter {
+			case "mine":
+				match = isMine
 			case "merges":
 				match = c.IsMerge
 			case "direct":
@@ -464,10 +521,14 @@ func (a *App) reloadCommitsLocked() {
 			}
 		}
 
+		if a.uncommitted != nil {
+			a.countMine++
+		}
+
 		var filtered []models.CommitSummary
 
 		// Put uncommitted changes at top if matches filter
-		if a.uncommitted != nil && (a.commitFilter == "all" || a.commitFilter == "direct") {
+		if a.uncommitted != nil && (a.commitFilter == "all" || a.commitFilter == "direct" || a.commitFilter == "mine") {
 			filtered = append(filtered, a.uncommitted.CommitSummary)
 		}
 		// Pinned commits at top right after uncommitted
@@ -731,6 +792,10 @@ func (a *App) handleEvents(gtx layout.Context) {
 		a.commitFilter = "all"
 		a.reloadCommitsLocked()
 	}
+	if a.btnFilterMine.Clicked(gtx) {
+		a.commitFilter = "mine"
+		a.reloadCommitsLocked()
+	}
 	if a.btnFilterMerges.Clicked(gtx) {
 		a.commitFilter = "merges"
 		a.reloadCommitsLocked()
@@ -936,6 +1001,96 @@ func (a *App) handleEvents(gtx layout.Context) {
 		}
 	}
 	a.mu.Unlock()
+
+	// Personal Office / Git Profile Modal open & close
+	if a.btnOpenProfile.Clicked(gtx) || a.btnOpenProfileFromDiff.Clicked(gtx) {
+		a.showProfileModal = !a.showProfileModal
+		if a.showProfileModal && a.activeRepo != "" {
+			u, _ := a.gitSvc.GetGitUser(a.activeRepo)
+			a.mu.Lock()
+			a.gitUser = u
+			a.profileNameEditor.SetText(u.Name)
+			a.profileEmailEditor.SetText(u.Email)
+			a.mu.Unlock()
+		}
+	}
+	if a.btnCloseProfile.Clicked(gtx) || a.btnBackdropProfile.Clicked(gtx) {
+		a.showProfileModal = false
+	}
+
+	// Profile Author Save: Local vs Global
+	if a.btnSaveProfileLocal.Clicked(gtx) {
+		name := strings.TrimSpace(a.profileNameEditor.Text())
+		email := strings.TrimSpace(a.profileEmailEditor.Text())
+		if a.activeRepo != "" {
+			if err := a.gitSvc.SetGitUser(a.activeRepo, name, email, false); err != nil {
+				a.mu.Lock()
+				a.gitOpStatus = "Error saving author: " + err.Error()
+				a.gitOpIsError = true
+				a.gitOpTime = time.Now()
+				a.mu.Unlock()
+			} else {
+				a.mu.Lock()
+				a.gitOpStatus = fmt.Sprintf("Author saved for this repo: %s <%s>", name, email)
+				a.gitOpIsError = false
+				a.gitUser.Name = name
+				a.gitUser.Email = email
+				a.gitOpTime = time.Now()
+				a.reloadCommitsLocked()
+				a.mu.Unlock()
+			}
+		}
+	}
+	if a.btnSaveProfileGlobal.Clicked(gtx) {
+		name := strings.TrimSpace(a.profileNameEditor.Text())
+		email := strings.TrimSpace(a.profileEmailEditor.Text())
+		if a.activeRepo != "" {
+			if err := a.gitSvc.SetGitUser(a.activeRepo, name, email, true); err != nil {
+				a.mu.Lock()
+				a.gitOpStatus = "Error saving global author: " + err.Error()
+				a.gitOpIsError = true
+				a.gitOpTime = time.Now()
+				a.mu.Unlock()
+			} else {
+				a.mu.Lock()
+				a.gitOpStatus = fmt.Sprintf("Author saved globally: %s <%s>", name, email)
+				a.gitOpIsError = false
+				a.gitUser.Name = name
+				a.gitUser.Email = email
+				a.gitOpTime = time.Now()
+				a.reloadCommitsLocked()
+				a.mu.Unlock()
+			}
+		}
+	}
+
+	// Remote Git Operations in Profile Modal
+	if a.btnProfilePush.Clicked(gtx) {
+		a.runGitPush()
+	}
+	if a.btnProfilePull.Clicked(gtx) {
+		a.runGitPull()
+	}
+	if a.btnProfileFetch.Clicked(gtx) {
+		a.runGitFetch()
+	}
+	if a.btnProfileStash.Clicked(gtx) {
+		a.runGitStash()
+	}
+	if a.btnProfileStashPop.Clicked(gtx) {
+		a.runGitStashPop()
+	}
+
+	// Commit & Push Actions from Uncommitted Changes Box
+	if a.btnDoCommit.Clicked(gtx) {
+		a.runGitCommit(a.commitMsgEditor.Text(), a.commitAmendBool.Value, false)
+	}
+	if a.btnDoCommitAndPush.Clicked(gtx) {
+		a.runGitCommit(a.commitMsgEditor.Text(), a.commitAmendBool.Value, true)
+	}
+	if a.btnDoStashUncommitted.Clicked(gtx) {
+		a.runGitStash()
+	}
 }
 
 func (a *App) layout(gtx layout.Context) layout.Dimensions {
@@ -948,6 +1103,7 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 		return a.layoutEmptyState(gtx, pal)
 	}
 
+	var content layout.Dimensions
 	if a.activeTab == "graph3d" {
 		a.mu.Lock()
 		gData := a.graph3dData
@@ -955,7 +1111,7 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 		if gData == nil {
 			go a.loadGraph3D()
 		}
-		return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+		content = layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 			// Panel 1: Left Navigation Sidebar
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				gtx.Constraints.Min.X = gtx.Dp(unit.Dp(290))
@@ -972,30 +1128,36 @@ func (a *App) layout(gtx layout.Context) layout.Dimensions {
 				})
 			}),
 		)
+	} else {
+		// Professional 3-Panel Architecture (Floating Island Cards with Spacious Gaps):
+		// Panel 1 (Left 290dp): Persistent Workspaces + Sub-repos + Branches
+		// Panel 2 (Middle 380dp): Commits & Merges Feed
+		// Panel 3 (Right flexed): Diff Viewer / Merged Commits / Analytics
+		content = layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+			// Panel 1: Left Navigation Sidebar
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				gtx.Constraints.Min.X = gtx.Dp(unit.Dp(290))
+				gtx.Constraints.Max.X = gtx.Dp(unit.Dp(290))
+				return a.layoutLeftSidebar(gtx, pal)
+			}),
+			// Panel 2: Middle Panel (Commits List or Updates List)
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				gtx.Constraints.Min.X = gtx.Dp(unit.Dp(380))
+				gtx.Constraints.Max.X = gtx.Dp(unit.Dp(380))
+				return a.layoutCenterPanel(gtx, pal)
+			}),
+			// Panel 3: Right Panel (Diff / Merge Breakdown / Analytics)
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return a.layoutRightPanel(gtx, pal)
+			}),
+		)
 	}
 
-	// Professional 3-Panel Architecture (Floating Island Cards with Spacious Gaps):
-	// Panel 1 (Left 290dp): Persistent Workspaces + Sub-repos + Branches
-	// Panel 2 (Middle 380dp): Commits & Merges Feed
-	// Panel 3 (Right flexed): Diff Viewer / Merged Commits / Analytics
-	return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
-		// Panel 1: Left Navigation Sidebar
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			gtx.Constraints.Min.X = gtx.Dp(unit.Dp(290))
-			gtx.Constraints.Max.X = gtx.Dp(unit.Dp(290))
-			return a.layoutLeftSidebar(gtx, pal)
-		}),
-		// Panel 2: Middle Panel (Commits List or Updates List)
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			gtx.Constraints.Min.X = gtx.Dp(unit.Dp(380))
-			gtx.Constraints.Max.X = gtx.Dp(unit.Dp(380))
-			return a.layoutCenterPanel(gtx, pal)
-		}),
-		// Panel 3: Right Panel (Diff / Merge Breakdown / Analytics)
-		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			return a.layoutRightPanel(gtx, pal)
-		}),
-	)
+	if a.showProfileModal {
+		a.layoutProfileModalOverlay(gtx, pal)
+	}
+
+	return content
 }
 
 // -------------------------------------------------------------
@@ -1065,6 +1227,20 @@ func (a *App) layoutLeftSidebar(gtx layout.Context, pal Palette) layout.Dimensio
 									)
 								})
 							})
+						}),
+
+						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							w := gtx.Dp(unit.Dp(1))
+							h := gtx.Dp(unit.Dp(18))
+							paint.FillShape(gtx.Ops, pal.Border, clip.Rect(image.Rect(0, 0, w, h)).Op())
+							return layout.Dimensions{Size: image.Pt(w, h)}
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+
+						// GROUP 3: Personal Office / Git Profile & Sync
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawIconButton(gtx, &a.btnOpenProfile, a.icons.Account, a.showProfileModal, pal)
 						}),
 					)
 				}),
@@ -1539,6 +1715,7 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 	commits := a.commits
 	activeBranch := a.activeBranch
 	cAll := a.countAll
+	cMine := a.countMine
 	cMerges := a.countMerges
 	cDirect := a.countDirect
 	cAI := a.countAI
@@ -1585,6 +1762,10 @@ func (a *App) layoutCommitsCenterPanel(gtx layout.Context, pal Palette) layout.D
 								return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 										return a.drawPillButton(gtx, &a.btnFilterAll, fmt.Sprintf("All (%d)", cAll), a.commitFilter == "all", pal)
+									}),
+									layout.Rigid(layout.Spacer{Width: unit.Dp(5)}.Layout),
+									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+										return a.drawPillButton(gtx, &a.btnFilterMine, fmt.Sprintf("Mine (%d)", cMine), a.commitFilter == "mine", pal)
 									}),
 									layout.Rigid(layout.Spacer{Width: unit.Dp(5)}.Layout),
 									layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -2060,6 +2241,13 @@ func (a *App) layoutCommitDetail(gtx layout.Context, pal Palette) layout.Dimensi
 					})
 				})
 			})
+		}),
+		// IF UNCOMMITTED: Show Commit & Push interactive action box!
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			if isUncommitted {
+				return a.layoutCommitActionBox(gtx, pal)
+			}
+			return layout.Dimensions{}
 		}),
 		// IF MERGE: Show contained commits section!
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -3230,4 +3418,528 @@ func openFolderDialog() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// -------------------------------------------------------------
+// Git Operations & Personal Office Helpers
+// -------------------------------------------------------------
+
+func (a *App) runGitCommit(msg string, amend bool, andPush bool) {
+	if a.activeRepo == "" {
+		return
+	}
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		a.mu.Lock()
+		a.gitOpStatus = "Error: Commit message cannot be empty."
+		a.gitOpIsError = true
+		a.gitOpTime = time.Now()
+		a.mu.Unlock()
+		if a.window != nil {
+			a.window.Invalidate()
+		}
+		return
+	}
+
+	a.mu.Lock()
+	a.gitOpStatus = "Creating commit..."
+	a.gitOpIsError = false
+	a.gitOpTime = time.Now()
+	a.mu.Unlock()
+	if a.window != nil {
+		a.window.Invalidate()
+	}
+
+	go func() {
+		out, err := a.gitSvc.CreateCommit(a.activeRepo, msg, amend)
+		a.mu.Lock()
+		if err != nil {
+			a.gitOpStatus = "Commit failed: " + err.Error() + "\n" + out
+			a.gitOpIsError = true
+		} else {
+			a.gitOpStatus = "Committed successfully!\n" + out
+			a.gitOpIsError = false
+			a.commitMsgEditor.SetText("")
+		}
+		a.gitOpTime = time.Now()
+		a.mu.Unlock()
+
+		if err == nil && andPush {
+			a.runGitPush()
+			return
+		}
+
+		a.loadData()
+		if a.window != nil {
+			a.window.Invalidate()
+		}
+	}()
+}
+
+func (a *App) runGitPush() {
+	if a.activeRepo == "" {
+		return
+	}
+	a.mu.Lock()
+	a.gitOpStatus = "Pushing changes to remote..."
+	a.gitOpIsError = false
+	a.gitOpTime = time.Now()
+	a.mu.Unlock()
+	if a.window != nil {
+		a.window.Invalidate()
+	}
+
+	go func() {
+		out, err := a.gitSvc.Push(a.activeRepo, "origin", a.activeBranch, true)
+		a.mu.Lock()
+		if err != nil {
+			a.gitOpStatus = "Push failed: " + err.Error() + "\n" + out
+			a.gitOpIsError = true
+		} else {
+			a.gitOpStatus = "Pushed to remote successfully!\n" + out
+			a.gitOpIsError = false
+		}
+		a.gitOpTime = time.Now()
+		a.mu.Unlock()
+		a.loadData()
+		if a.window != nil {
+			a.window.Invalidate()
+		}
+	}()
+}
+
+func (a *App) runGitPull() {
+	if a.activeRepo == "" {
+		return
+	}
+	a.mu.Lock()
+	a.gitOpStatus = "Pulling latest updates from remote..."
+	a.gitOpIsError = false
+	a.gitOpTime = time.Now()
+	a.mu.Unlock()
+	if a.window != nil {
+		a.window.Invalidate()
+	}
+
+	go func() {
+		out, err := a.gitSvc.Pull(a.activeRepo)
+		a.mu.Lock()
+		if err != nil {
+			a.gitOpStatus = "Pull failed: " + err.Error() + "\n" + out
+			a.gitOpIsError = true
+		} else {
+			a.gitOpStatus = "Pulled successfully!\n" + out
+			a.gitOpIsError = false
+		}
+		a.gitOpTime = time.Now()
+		a.mu.Unlock()
+		a.loadData()
+		if a.window != nil {
+			a.window.Invalidate()
+		}
+	}()
+}
+
+func (a *App) runGitFetch() {
+	if a.activeRepo == "" {
+		return
+	}
+	a.mu.Lock()
+	a.gitOpStatus = "Fetching all remotes & branches..."
+	a.gitOpIsError = false
+	a.gitOpTime = time.Now()
+	a.mu.Unlock()
+	if a.window != nil {
+		a.window.Invalidate()
+	}
+
+	go func() {
+		out, err := a.gitSvc.Fetch(a.activeRepo)
+		a.mu.Lock()
+		if err != nil {
+			a.gitOpStatus = "Fetch failed: " + err.Error() + "\n" + out
+			a.gitOpIsError = true
+		} else {
+			a.gitOpStatus = "Fetch completed!\n" + out
+			a.gitOpIsError = false
+		}
+		a.gitOpTime = time.Now()
+		a.mu.Unlock()
+		a.loadData()
+		if a.window != nil {
+			a.window.Invalidate()
+		}
+	}()
+}
+
+func (a *App) runGitStash() {
+	if a.activeRepo == "" {
+		return
+	}
+	a.mu.Lock()
+	a.gitOpStatus = "Stashing changes..."
+	a.gitOpIsError = false
+	a.gitOpTime = time.Now()
+	a.mu.Unlock()
+	if a.window != nil {
+		a.window.Invalidate()
+	}
+
+	go func() {
+		tag := "sCodeViewer " + time.Now().Format("2006-01-02 15:04:05")
+		out, err := a.gitSvc.Stash(a.activeRepo, tag)
+		a.mu.Lock()
+		if err != nil {
+			a.gitOpStatus = "Stash failed: " + err.Error() + "\n" + out
+			a.gitOpIsError = true
+		} else {
+			a.gitOpStatus = "Stashed changes successfully!\n" + out
+			a.gitOpIsError = false
+		}
+		a.gitOpTime = time.Now()
+		a.mu.Unlock()
+		a.loadData()
+		if a.window != nil {
+			a.window.Invalidate()
+		}
+	}()
+}
+
+func (a *App) runGitStashPop() {
+	if a.activeRepo == "" {
+		return
+	}
+	a.mu.Lock()
+	a.gitOpStatus = "Applying latest stash..."
+	a.gitOpIsError = false
+	a.gitOpTime = time.Now()
+	a.mu.Unlock()
+	if a.window != nil {
+		a.window.Invalidate()
+	}
+
+	go func() {
+		out, err := a.gitSvc.StashPop(a.activeRepo)
+		a.mu.Lock()
+		if err != nil {
+			a.gitOpStatus = "Stash pop failed: " + err.Error() + "\n" + out
+			a.gitOpIsError = true
+		} else {
+			a.gitOpStatus = "Stash popped successfully!\n" + out
+			a.gitOpIsError = false
+		}
+		a.gitOpTime = time.Now()
+		a.mu.Unlock()
+		a.loadData()
+		if a.window != nil {
+			a.window.Invalidate()
+		}
+	}()
+}
+
+func (a *App) layoutCommitActionBox(gtx layout.Context, pal Palette) layout.Dimensions {
+	a.mu.Lock()
+	authorName := a.gitUser.Name
+	authorEmail := a.gitUser.Email
+	statusText := a.gitOpStatus
+	statusIsErr := a.gitOpIsError
+	a.mu.Unlock()
+
+	return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(8), Left: unit.Dp(6), Right: unit.Dp(10)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return drawWithBorder(gtx, pal.Surface, unit.Dp(8), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Top: unit.Dp(12), Bottom: unit.Dp(12), Left: unit.Dp(14), Right: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					// Row 1: Header + Author identity tag
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Label(a.theme, unit.Sp(12), "NEW COMMIT")
+								lbl.Font.Weight = font.Bold
+								lbl.Color = pal.Accent
+								return lbl.Layout(gtx)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+								authorStr := "Author: not configured"
+								if authorName != "" {
+									authorStr = fmt.Sprintf("Author: %s <%s>", authorName, authorEmail)
+								}
+								lbl := material.Label(a.theme, unit.Sp(10.5), authorStr)
+								lbl.Color = pal.TextMuted
+								return lbl.Layout(gtx)
+							}),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return a.drawIconPillButton(gtx, &a.btnOpenProfileFromDiff, a.icons.Account, "Profile / Switch", false, pal)
+							}),
+						)
+					}),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+
+					// Row 2: Commit message input box
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						ed := material.Editor(a.theme, &a.commitMsgEditor, "Commit message summary (e.g. feat: add new 3D graph viewer)...")
+						ed.TextSize = unit.Sp(11.5)
+						ed.Color = pal.Text
+						ed.HintColor = pal.TextMuted
+
+						return drawWithRoundedBg(gtx, pal.Bg, unit.Dp(6), func(gtx layout.Context) layout.Dimensions {
+							return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								gtx.Constraints.Min.Y = gtx.Dp(unit.Dp(48))
+								return ed.Layout(gtx)
+							})
+						})
+					}),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+
+					// Row 3: Actions row (Amend checkbox + Stash + Commit + Commit & Push)
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								cb := material.CheckBox(a.theme, &a.commitAmendBool, "Amend (--amend)")
+								cb.Color = pal.Text
+								cb.IconColor = pal.Accent
+								cb.TextSize = unit.Sp(11)
+								return cb.Layout(gtx)
+							}),
+							layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return a.drawIconPillButton(gtx, &a.btnDoStashUncommitted, a.icons.Folder, "Stash", false, pal)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return a.drawIconPillButton(gtx, &a.btnDoCommit, a.icons.Check, "Commit", false, pal)
+							}),
+							layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								return a.drawIconPillButton(gtx, &a.btnDoCommitAndPush, a.icons.Push, "Commit & Push", true, pal)
+							}),
+						)
+					}),
+
+					// Status Banner if any
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						if statusText == "" {
+							return layout.Dimensions{}
+						}
+						bg := pal.Selected
+						fg := pal.Accent
+						if statusIsErr {
+							bg = pal.DelBg
+							fg = pal.DelText
+						}
+						return layout.Inset{Top: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							return drawWithRoundedBg(gtx, bg, unit.Dp(4), func(gtx layout.Context) layout.Dimensions {
+								return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Label(a.theme, unit.Sp(10.5), statusText)
+									lbl.Color = fg
+									return lbl.Layout(gtx)
+								})
+							})
+						})
+					}),
+				)
+			})
+		})
+	})
+}
+
+func (a *App) layoutProfileModalOverlay(gtx layout.Context, pal Palette) layout.Dimensions {
+	return layout.Stack{}.Layout(gtx,
+		layout.Expanded(func(gtx layout.Context) layout.Dimensions {
+			dims := layout.Dimensions{Size: gtx.Constraints.Max}
+			backdropCol := color.NRGBA{R: 0, G: 0, B: 0, A: 175}
+			paint.FillShape(gtx.Ops, backdropCol, clip.Rect(image.Rect(0, 0, dims.Size.X, dims.Size.Y)).Op())
+			return a.btnBackdropProfile.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return dims
+			})
+		}),
+		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
+			return layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return a.btnCardProfile.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return a.layoutProfileModalCard(gtx, pal)
+				})
+			})
+		}),
+	)
+}
+
+func (a *App) layoutProfileModalCard(gtx layout.Context, pal Palette) layout.Dimensions {
+	a.mu.Lock()
+	repoName := a.repoName
+	activeBranch := a.activeBranch
+	statusText := a.gitOpStatus
+	statusIsErr := a.gitOpIsError
+	a.mu.Unlock()
+
+	gtx.Constraints.Min.X = gtx.Dp(unit.Dp(560))
+	gtx.Constraints.Max.X = gtx.Dp(unit.Dp(560))
+
+	return drawWithBorder(gtx, pal.Surface, unit.Dp(10), unit.Dp(1), pal.Border, func(gtx layout.Context) layout.Dimensions {
+		return layout.UniformInset(unit.Dp(20)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				// Header
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.icons.Layout(gtx, a.icons.Account, pal.Accent, unit.Dp(22))
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Label(a.theme, unit.Sp(14), "Git Personal Office / Личный кабинет")
+									lbl.Font.Weight = font.Bold
+									lbl.Color = pal.Text
+									return lbl.Layout(gtx)
+								}),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Label(a.theme, unit.Sp(10.5), fmt.Sprintf("Repo: %s  •  Branch: %s", repoName, activeBranch))
+									lbl.Color = pal.TextMuted
+									return lbl.Layout(gtx)
+								}),
+							)
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawIconButton(gtx, &a.btnCloseProfile, a.icons.Close, false, pal)
+						}),
+					)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return drawDivider(gtx, pal.Border)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
+
+				// Section 1: Commit Author Identity
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.drawSectionHeader(gtx, "COMMIT AUTHOR IDENTITY", pal)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+						// Name field
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Label(a.theme, unit.Sp(10), "NAME (user.name)")
+									lbl.Font.Weight = font.SemiBold
+									lbl.Color = pal.TextMuted
+									return lbl.Layout(gtx)
+								}),
+								layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									ed := material.Editor(a.theme, &a.profileNameEditor, "Author Name")
+									ed.TextSize = unit.Sp(11)
+									ed.Color = pal.Text
+									return drawWithRoundedBg(gtx, pal.Bg, unit.Dp(4), func(gtx layout.Context) layout.Dimensions {
+										return layout.UniformInset(unit.Dp(7)).Layout(gtx, ed.Layout)
+									})
+								}),
+							)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
+						// Email field
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									lbl := material.Label(a.theme, unit.Sp(10), "EMAIL (user.email)")
+									lbl.Font.Weight = font.SemiBold
+									lbl.Color = pal.TextMuted
+									return lbl.Layout(gtx)
+								}),
+								layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+								layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+									ed := material.Editor(a.theme, &a.profileEmailEditor, "Author Email")
+									ed.TextSize = unit.Sp(11)
+									ed.Color = pal.Text
+									return drawWithRoundedBg(gtx, pal.Bg, unit.Dp(4), func(gtx layout.Context) layout.Dimensions {
+										return layout.UniformInset(unit.Dp(7)).Layout(gtx, ed.Layout)
+									})
+								}),
+							)
+						}),
+					)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+				// Save Buttons Row
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawIconPillButton(gtx, &a.btnSaveProfileLocal, a.icons.Save, "Save for Current Repository", true, pal)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawIconPillButton(gtx, &a.btnSaveProfileGlobal, a.icons.Save, "Save Globally (~/.gitconfig)", false, pal)
+						}),
+					)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return drawDivider(gtx, pal.Border)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
+
+				// Section 2: Git Remote Operations & Sync
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return a.drawSectionHeader(gtx, "GIT OPERATIONS & SYNC", pal)
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawIconPillButton(gtx, &a.btnProfilePush, a.icons.Push, "Push", false, pal)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawIconPillButton(gtx, &a.btnProfilePull, a.icons.Pull, "Pull", false, pal)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawIconPillButton(gtx, &a.btnProfileFetch, a.icons.Sync, "Fetch All", false, pal)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawIconPillButton(gtx, &a.btnProfileStash, a.icons.Folder, "Stash", false, pal)
+						}),
+						layout.Rigid(layout.Spacer{Width: unit.Dp(6)}.Layout),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawIconPillButton(gtx, &a.btnProfileStashPop, a.icons.Folder, "Pop Stash", false, pal)
+						}),
+					)
+				}),
+
+				// Status output banner
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					if statusText == "" {
+						return layout.Dimensions{}
+					}
+					bg := pal.Selected
+					fg := pal.Accent
+					if statusIsErr {
+						bg = pal.DelBg
+						fg = pal.DelText
+					}
+					return layout.Inset{Top: unit.Dp(14)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return drawWithRoundedBg(gtx, bg, unit.Dp(6), func(gtx layout.Context) layout.Dimensions {
+							return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								lbl := material.Label(a.theme, unit.Sp(11), statusText)
+								lbl.Color = fg
+								return lbl.Layout(gtx)
+							})
+						})
+					})
+				}),
+				layout.Rigid(layout.Spacer{Height: unit.Dp(16)}.Layout),
+				// Done / Close button
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return layout.Dimensions{} }),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return a.drawPillButton(gtx, &a.btnCloseProfile, "Done", true, pal)
+						}),
+					)
+				}),
+			)
+		})
+	})
 }
